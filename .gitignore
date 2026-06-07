@@ -1,0 +1,30 @@
+# Environment Variables
+.env
+*.env
+
+# Database
+*.db
+siddhi.db
+
+# Python
+**/__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Node
+node_modules/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# OS Files
+.DS_Store
+Thumbs.db
