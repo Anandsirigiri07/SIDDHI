@@ -35,6 +35,7 @@ from backend.sql_guard import validate_query, rewrite_query
 from backend.session_manager import session_manager
 from backend.graph_engine import build_network_graph
 from backend.pattern_engine import detect_hotspots
+from backend.forecast_engine import forecast_hotspots
 from backend.evidence_assembler import generate_final_response, create_audit_record
 
 # Setup logger
@@ -103,6 +104,19 @@ def get_total_rows_count(sql: str) -> int:
 def health_check():
     """Simple API status checker."""
     return {"status": "healthy", "service": "siddhi-backend"}
+
+@app.get("/api/forecast")
+@limiter.limit("20/minute")
+def get_hotspot_forecast(request: Request, current_user: User = Depends(get_current_user)):
+    """Predicts next-week hotspot intensity per spatial cluster (exponential smoothing baseline)."""
+    try:
+        return forecast_hotspots()
+    except Exception as e:
+        logger.error(f"Forecast generation failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Forecast generation error: {str(e)}"
+        )
 
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):

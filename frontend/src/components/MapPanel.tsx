@@ -1,6 +1,8 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import L from 'leaflet';
-import { Map, MapPin } from 'lucide-react';
+import { Map, MapPin, TrendingUp } from 'lucide-react';
+import { fetchForecast } from '../utils/api';
+import type { ForecastData } from '../utils/api';
 
 interface HeatmapFeature {
   type: string;
@@ -34,6 +36,10 @@ export const MapPanel: React.FC<MapPanelProps> = ({ heatmapData, onHotspotClick 
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersGroupRef = useRef<L.FeatureGroup | null>(null);
+  const forecastGroupRef = useRef<L.FeatureGroup | null>(null);
+  const [showForecast, setShowForecast] = useState(false);
+  const [forecastData, setForecastData] = useState<ForecastData | null>(null);
+  const [forecastLoading, setForecastLoading] = useState(false);
 
   useEffect(() => {
     if (!mapContainerRef.current) return;
@@ -57,6 +63,7 @@ export const MapPanel: React.FC<MapPanelProps> = ({ heatmapData, onHotspotClick 
 
       mapInstanceRef.current = map;
       markersGroupRef.current = L.featureGroup().addTo(map);
+      forecastGroupRef.current = L.featureGroup().addTo(map);
     }
 
     return () => {
@@ -134,6 +141,55 @@ export const MapPanel: React.FC<MapPanelProps> = ({ heatmapData, onHotspotClick 
 
   }, [heatmapData, onHotspotClick]);
 
+  // Fetch predicted hotspots when the forecast overlay is enabled
+  useEffect(() => {
+    if (!showForecast || forecastData) return;
+    setForecastLoading(true);
+    fetchForecast()
+      .then((data) => setForecastData(data))
+      .catch((e) => console.error('Forecast fetch failed', e))
+      .finally(() => setForecastLoading(false));
+  }, [showForecast, forecastData]);
+
+  // Render forecast overlay as dashed trend-colored prediction zones
+  useEffect(() => {
+    if (!mapInstanceRef.current || !forecastGroupRef.current) return;
+    forecastGroupRef.current.clearLayers();
+    if (!showForecast || !forecastData) return;
+
+    forecastData.features.forEach((feature) => {
+      const [lng, lat] = feature.geometry.coordinates;
+      const props = feature.properties;
+
+      let color = '#a855f7'; // Purple (Rising prediction)
+      if (props.trend === 'Stable') {
+        color = '#38bdf8'; // Sky blue
+      } else if (props.trend === 'Declining') {
+        color = '#64748b'; // Slate
+      }
+
+      const circle = L.circle([lat, lng], {
+        radius: 450,
+        color: color,
+        fillColor: color,
+        fillOpacity: 0.12,
+        weight: 2,
+        dashArray: '6 6'
+      });
+
+      circle.bindPopup(`
+        <div class="p-1.5 text-xs font-sans text-slate-100 flex flex-col gap-1.5 min-w-[200px] bg-slate-900">
+          <div class="font-bold border-b border-slate-700 pb-1 text-purple-400 text-sm uppercase tracking-wide">Forecast: ${props.location_name}</div>
+          <div class="flex justify-between"><span class="text-slate-400 font-semibold">Trend (next 7d):</span> <span class="font-bold text-slate-200">${props.trend}</span></div>
+          <div class="flex justify-between"><span class="text-slate-400 font-semibold">Predicted / week:</span> <span class="font-bold text-amber-400">${props.predicted_weekly_incidents}</span></div>
+          <div class="flex justify-between"><span class="text-slate-400 font-semibold">Historical avg:</span> <span class="font-bold text-slate-200">${props.historical_weekly_avg}</span></div>
+          <div class="flex justify-between"><span class="text-slate-400 font-semibold">Primary Crime:</span> <span class="font-bold text-slate-200">${props.dominant_crime}</span></div>
+        </div>
+      `);
+      forecastGroupRef.current?.addLayer(circle);
+    });
+  }, [showForecast, forecastData]);
+
   return (
     <div className="glass-panel w-full rounded-lg flex flex-col h-[520px] shadow-2xl relative">
       <div className="p-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/40">
@@ -144,10 +200,24 @@ export const MapPanel: React.FC<MapPanelProps> = ({ heatmapData, onHotspotClick 
           </h3>
         </div>
         
-        <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
-          <MapPin className="w-3 h-3 text-rose-500 animate-bounce" />
-          Bengaluru Sector HUD
-        </span>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowForecast((v) => !v)}
+            className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 px-2 py-1 rounded border transition-colors duration-200 ${
+              showForecast
+                ? 'bg-purple-500/20 border-purple-500 text-purple-300'
+                : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Toggle predicted hotspot overlay (next 7 days)"
+          >
+            <TrendingUp className="w-3 h-3" />
+            {forecastLoading ? 'Loading…' : 'Forecast'}
+          </button>
+          <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+            <MapPin className="w-3 h-3 text-rose-500 animate-bounce" />
+            Bengaluru Sector HUD
+          </span>
+        </div>
       </div>
 
       <div className="flex-1 relative">

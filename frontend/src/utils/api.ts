@@ -102,3 +102,33 @@ export const fetchAuditTrail = async (): Promise<any[]> => {
   const response = await api.get<any[]>('/api/audit');
   return response.data;
 };
+
+export interface ForecastFeature {
+  type: string;
+  geometry: {
+    type: string;
+    coordinates: [number, number]; // [lng, lat]
+  };
+  properties: {
+    cluster_id: number;
+    location_name: string;
+    dominant_crime: string;
+    historical_weekly_avg: number;
+    predicted_weekly_incidents: number;
+    predicted_risk_score: number;
+    trend: 'Rising' | 'Stable' | 'Declining';
+    observation_weeks: number;
+  };
+}
+
+export interface ForecastData {
+  type: string;
+  features: ForecastFeature[];
+  generated_at: string;
+  horizon_days: number;
+}
+
+export const fetchForecast = async (): Promise<ForecastData> => {
+  const response = await api.get<ForecastData>('/api/forecast');
+  return response.data;
+};
