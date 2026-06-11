@@ -12,7 +12,21 @@ from backend.database import get_db
 from backend.models import User
 
 # Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "siddhi_super_secret_karnataka_police_key_2026")
+# Fail fast on missing or placeholder JWT secrets instead of silently falling
+# back to a hardcoded default. Accepts JWT_SECRET_KEY (documented) or legacy SECRET_KEY.
+_PLACEHOLDER_SECRETS = {
+    "your_jwt_secret_here",
+    "changeme",
+    "secret",
+    "siddhi_super_secret_karnataka_police_key_2026",
+}
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY") or ""
+if SECRET_KEY.lower() in _PLACEHOLDER_SECRETS or len(SECRET_KEY) < 12:
+    raise RuntimeError(
+        "JWT_SECRET_KEY is unset, too short (<12 chars), or a known placeholder. "
+        "Generate a strong secret, e.g.: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
 
