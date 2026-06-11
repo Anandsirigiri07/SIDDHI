@@ -1,5 +1,6 @@
 # backend/seed.py
 import os
+import secrets
 import sys
 import random
 from datetime import datetime, timedelta
@@ -61,25 +62,32 @@ def init_db_from_schema():
 def seed_data():
     db: Session = SessionLocal()
     try:
-        # 1. Seed Demo Users
-        print("Seeding users...")
-        demo_users = [
-            {"username": "investigator", "password": "password123", "role": "Investigator", "name": "Inspector Suresh Kumar"},
-            {"username": "analyst", "password": "password123", "role": "Analyst", "name": "Dr. Ananya Sen (Crime Analyst)"},
-            {"username": "supervisor", "password": "password123", "role": "Supervisor", "name": "ACP Rajesh Patil"},
-            {"username": "policymaker", "password": "password123", "role": "Policymaker", "name": "DGP K. R. Rao"}
-        ]
-        for du in demo_users:
-            existing = db.query(User).filter_by(username=du["username"]).first()
-            if not existing:
-                u = User(
-                    username=du["username"],
-                    password_hash=hash_password(du["password"]),
-                    role=du["role"],
-                    name=du["name"]
-                )
-                db.add(u)
-        db.commit()
+        # 1. Seed Demo Users (opt-in only: set SEED_DEMO_USERS=true)
+        if os.getenv("SEED_DEMO_USERS", "false").strip().lower() in ("1", "true", "yes"):
+            print("Seeding users...")
+            demo_password = os.getenv("DEMO_USER_PASSWORD")
+            if not demo_password:
+                demo_password = secrets.token_urlsafe(12)
+                print(f"Generated demo user password (shown once, not stored): {demo_password}")
+            demo_users = [
+                {"username": "investigator", "password": demo_password, "role": "Investigator", "name": "Inspector Suresh Kumar"},
+                {"username": "analyst", "password": demo_password, "role": "Analyst", "name": "Dr. Ananya Sen (Crime Analyst)"},
+                {"username": "supervisor", "password": demo_password, "role": "Supervisor", "name": "ACP Rajesh Patil"},
+                {"username": "policymaker", "password": demo_password, "role": "Policymaker", "name": "DGP K. R. Rao"}
+            ]
+            for du in demo_users:
+                existing = db.query(User).filter_by(username=du["username"]).first()
+                if not existing:
+                    u = User(
+                        username=du["username"],
+                        password_hash=hash_password(du["password"]),
+                        role=du["role"],
+                        name=du["name"]
+                    )
+                    db.add(u)
+            db.commit()
+        else:
+            print("Skipping demo users. Set SEED_DEMO_USERS=true to create them (local development only).")
 
         # 2. Seed Locations
         print("Seeding locations...")

@@ -116,8 +116,14 @@ SIDDHI solves these challenges by combining a secure FastAPI backend, a responsi
    ```env
    GEMINI_API_KEY=your_gemini_api_key_here
    GEMINI_MODEL=gemini-2.5-flash
-   JWT_SECRET_KEY=your_jwt_secret_here
+   # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+   JWT_SECRET_KEY=<strong-random-secret>
+   # Optional, local development only:
+   SEED_DEMO_USERS=true
+   DEMO_USER_PASSWORD=<choose-a-strong-password>
    ```
+   The backend refuses to start if `JWT_SECRET_KEY` is missing, shorter than
+   12 characters, or a known placeholder value.
 
 4. **Initialize and Seed the database:**
    ```bash
@@ -151,15 +157,18 @@ SIDDHI solves these challenges by combining a secure FastAPI backend, a responsi
 
 ---
 
-## 8. Demo Credentials
-Log in using the following credentials to access the analytical workspace:
+## 8. Demo Users (Local Development Only)
+Demo accounts are **not** created by default. To enable them, set `SEED_DEMO_USERS=true`
+before running `python seed.py`. The password for all demo accounts comes from
+`DEMO_USER_PASSWORD`; if unset, a random password is generated and printed once
+during seeding. Never enable demo users in production.
 
-| Username | Password | Role | Access Level |
-| :--- | :--- | :--- | :--- |
-| **analyst** | `password123` | Analyst | Co-accused graphs & hotspot analysis |
-| **investigator** | `password123` | Investigator | Access to specific case profiles |
-| **supervisor** | `password123` | Supervisor | Access to audit trails & logs |
-| **policymaker** | `password123` | Policymaker | Aggregate trends & maps |
+| Username | Role | Access Level |
+| :--- | :--- | :--- |
+| **analyst** | Analyst | Co-accused graphs & hotspot analysis |
+| **investigator** | Investigator | Access to specific case profiles |
+| **supervisor** | Supervisor | Access to audit trails & logs |
+| **policymaker** | Policymaker | Aggregate trends & maps |
 
 ---
 
