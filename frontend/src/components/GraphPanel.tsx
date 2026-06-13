@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import * as d3 from 'd3';
 import { GitBranch, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 
@@ -12,6 +12,8 @@ interface GraphNode {
   community: number;
   risk_score?: number;
   crime_type?: string;
+  is_bridge?: boolean;
+  bridge_score?: number;
 }
 
 interface GraphLink {
@@ -42,6 +44,10 @@ export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClic
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  const [showLocations, setShowLocations] = useState(true);
+  const [showVictims, setShowVictims] = useState(true);
+  const [minRiskScore, setMinRiskScore] = useState(0);
+
   useEffect(() => {
     if (!graphData || !graphData.nodes || graphData.nodes.length === 0 || !svgRef.current) return;
 
@@ -62,9 +68,25 @@ export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClic
 
     svg.call(zoomBehavior as any);
 
+    // Filter nodes based on user selections
+    const filteredNodes = graphData.nodes.filter((node) => {
+      if (node.type === 'Location' && !showLocations) return false;
+      if (node.type === 'Victim' && !showVictims) return false;
+      if (node.type === 'Accused' && node.risk_score !== undefined && node.risk_score < minRiskScore) return false;
+      return true;
+    });
+
+    const filteredNodeIds = new Set(filteredNodes.map(n => n.id));
+
+    const filteredLinks = graphData.links.filter((link) => {
+      const sourceId = typeof link.source === 'object' ? (link.source as any).id : link.source;
+      const targetId = typeof link.target === 'object' ? (link.target as any).id : link.target;
+      return filteredNodeIds.has(sourceId) && filteredNodeIds.has(targetId);
+    });
+
     // Deep copy data for D3 mutation
-    const nodes = graphData.nodes.map((d) => ({ ...d }));
-    const links = graphData.links.map((d) => ({
+    const nodes = filteredNodes.map((d) => ({ ...d }));
+    const links = filteredLinks.map((d) => ({
       source: d.source,
       target: d.target,
       relation: d.relation,
@@ -108,13 +130,18 @@ export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClic
         if (d.type === 'Victim') return '#3b82f6'; // blue-500
         return '#94a3b8';
       })
-      .attr('stroke', '#090d16')
-      .attr('stroke-width', 1.5)
-      .attr('class', (d: any) => 
-        d.id === graphData.seed_node 
-          ? 'stroke-cyan-400 stroke-[3px] paint-order-stroke filter drop-shadow-[0_0_8px_rgba(6,182,212,0.6)]' 
-          : ''
-      );
+      .attr('stroke', (d: any) => d.is_bridge ? '#fbbf24' : '#090d16')
+      .attr('stroke-width', (d: any) => d.is_bridge ? 3.0 : 1.5)
+      .attr('class', (d: any) => {
+        let cls = '';
+        if (d.id === graphData.seed_node) {
+          cls += 'stroke-cyan-400 stroke-[3px] paint-order-stroke filter drop-shadow-[0_0_8px_rgba(6,182,212,0.6)] ';
+        }
+        if (d.is_bridge) {
+          cls += 'paint-order-stroke filter drop-shadow-[0_0_10px_rgba(251,191,36,0.8)] animate-pulse';
+        }
+        return cls;
+      });
 
     // Render labels
     node.append('text')
@@ -136,6 +163,9 @@ export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClic
         }
         if (d.crime_type !== undefined) {
           label += `\nCrime Type: ${d.crime_type}`;
+        }
+        if (d.is_bridge) {
+          label += `\n⚠️ Bridge Suspect (Bridge Score: ${d.bridge_score})`;
         }
         return label;
       });
@@ -192,7 +222,7 @@ export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClic
     // Expose helpers via windows or standard buttons
     (window as any).centerSiddhiGraph = centerGraph;
 
-  }, [graphData]);
+  }, [graphData, showLocations, showVictims, minRiskScore]);
 
   return (
     <div ref={containerRef} className="glass-panel w-full rounded-lg flex flex-col h-[520px] shadow-2xl relative">
@@ -212,6 +242,43 @@ export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClic
           <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500"></span><span className="text-slate-400">Victim</span></div>
         </div>
       </div>
+
+      {graphData && graphData.nodes.length > 0 && (
+        <div className="p-2 px-4 border-b border-slate-900 bg-slate-950/60 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-4">
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={showLocations}
+                onChange={(e) => setShowLocations(e.target.checked)}
+                className="accent-amber-500 rounded border-slate-800 bg-slate-900 focus:ring-0"
+              />
+              <span className="text-slate-400 font-semibold">Locations</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={showVictims}
+                onChange={(e) => setShowVictims(e.target.checked)}
+                className="accent-blue-500 rounded border-slate-800 bg-slate-900 focus:ring-0"
+              />
+              <span className="text-slate-400 font-semibold">Victims</span>
+            </label>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Min Risk:</span>
+            <input
+              type="range"
+              min="0"
+              max="120"
+              value={minRiskScore}
+              onChange={(e) => setMinRiskScore(Number(e.target.value))}
+              className="w-24 accent-rose-500 cursor-pointer bg-slate-800 rounded-lg h-1"
+            />
+            <span className="font-mono font-bold text-rose-400 text-[10px] min-w-[20px] text-right">{minRiskScore}</span>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 bg-[#050811] relative overflow-hidden">
         {(!graphData || graphData.nodes.length === 0) ? (

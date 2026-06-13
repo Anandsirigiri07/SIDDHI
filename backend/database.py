@@ -31,5 +31,15 @@ def execute_raw_sql(sql_query: str):
         result = connection.execute(text(sql_query))
         # Convert result rows into a list of dicts
         keys = list(result.keys())
-        rows = [dict(zip(keys, row)) for row in result.fetchall()]
+        # Make duplicate keys unique by appending a suffix
+        unique_keys = []
+        seen = {}
+        for key in keys:
+            if key in seen:
+                seen[key] += 1
+                unique_keys.append(f"{key}_{seen[key]}")
+            else:
+                seen[key] = 0
+                unique_keys.append(key)
+        rows = [dict(zip(unique_keys, row)) for row in result.fetchall()]
         return rows

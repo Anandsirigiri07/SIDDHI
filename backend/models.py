@@ -55,6 +55,7 @@ class FIR(Base):
     crime_type = Column(String, nullable=False)
     description = Column(String, nullable=False)
     status = Column(String, nullable=False)
+    document_reference = Column(String, nullable=True)
 
     location_id = Column(Integer, ForeignKey("locations.location_id"))
     officer_id = Column(Integer, ForeignKey("officers.officer_id"))

@@ -142,5 +142,112 @@ def test_nl_to_sql_query_specificity():
     assert sql2 != sql3
     assert sql1 != sql3
 
+def test_bridge_suspect_calculation():
+    """Verify that suspect bridge scores are computed using community mapping and centrality."""
+    from backend.database import execute_raw_sql
+    sql_results = execute_raw_sql("SELECT DISTINCT A1.name AS accused_1_name, A2.name AS accused_2_name, A1.accused_id, A2.accused_id, F.fir_id FROM accused AS A1 JOIN fir_accused AS FA1 ON A1.accused_id = FA1.accused_id JOIN firs AS F ON FA1.fir_id = F.fir_id JOIN fir_accused AS FA2 ON F.fir_id = FA2.fir_id JOIN accused AS A2 ON FA2.accused_id = A2.accused_id WHERE A1.name LIKE '%Rajesh%' AND A1.accused_id != A2.accused_id LIMIT 10")
+    graph = build_network_graph(sql_results)
+    
+    assert "nodes" in graph
+    accused_nodes = [n for n in graph["nodes"] if n["type"] == "Accused"]
+    assert len(accused_nodes) > 0
+    for node in accused_nodes:
+        assert "bridge_score" in node
+        assert "is_bridge" in node
+        assert isinstance(node["bridge_score"], float)
+        assert isinstance(node["is_bridge"], bool)
+
+def test_document_ingest_pipeline():
+    """Verify the two-stage document ingestion pipeline: parse draft then confirm."""
+    token = get_auth_token()
+    
+    # 1. Parse draft
+    from io import BytesIO
+    file_content = b"Image content with handwritten notes about a burglary in Koramangala 5th Block."
+    response_parse = client.post(
+        "/api/ingest/parse",
+        files={"file": ("burglary_note.png", BytesIO(file_content), "image/png")},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response_parse.status_code == 200
+    data_parse = response_parse.json()
+    assert data_parse["success"] is True
+    assert "metadata" in data_parse
+    draft = data_parse["draft"]
+    assert "fir" in draft
+    assert "accused" in draft
+    assert "confidence" in draft["fir"]["fir_number"]
+    assert "value" in draft["fir"]["fir_number"]
+    
+    # 2. Confirm ingestion
+    payload_confirm = {
+        "fir": {
+            "fir_number": draft["fir"]["fir_number"]["value"],
+            "date": draft["fir"]["date"]["value"],
+            "crime_type": draft["fir"]["crime_type"]["value"],
+            "description": draft["fir"]["description"]["value"] + " (Verified)",
+            "status": "Under Investigation",
+            "location_name": draft["fir"]["location_name"]["value"],
+            "station_area": draft["fir"]["station_area"]["value"],
+            "district": draft["fir"]["district"]["value"]
+        },
+        "accused": [
+            {
+                "name": draft["accused"][0]["name"]["value"],
+                "age": draft["accused"][0]["age"]["value"],
+                "gender": draft["accused"][0]["gender"]["value"],
+                "occupation": draft["accused"][0]["occupation"]["value"],
+                "address": draft["accused"][0]["address"]["value"],
+                "role": "Principal"
+            }
+        ],
+        "victims": [
+            {
+                "name": draft["victims"][0]["name"]["value"],
+                "age": draft["victims"][0]["age"]["value"],
+                "gender": draft["victims"][0]["gender"]["value"]
+            }
+        ],
+        "document_reference": "burglary_note.png"
+    }
+    
+    response_confirm = client.post(
+        "/api/ingest/confirm",
+        json=payload_confirm,
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response_confirm.status_code == 200
+    data_confirm = response_confirm.json()
+    assert data_confirm["success"] is True
+    assert "fir_id" in data_confirm
+    assert data_confirm["fir_number"] == draft["fir"]["fir_number"]["value"]
+    
+    # Check database persistence
+    db = SessionLocal()
+    try:
+        inserted_fir = db.query(FIR).filter(FIR.fir_number == draft["fir"]["fir_number"]["value"]).first()
+        assert inserted_fir is not None
+        assert inserted_fir.document_reference == "burglary_note.png"
+        assert "Verified" in inserted_fir.description
+    finally:
+        db.close()
+
+def test_prosecutorial_dossier_generation():
+    """Verify that case dossiers are generated with facts and inferences clearly separated and cited."""
+    token = get_auth_token()
+    response = client.post(
+        "/api/dossier",
+        json={"query": "Show burglary hotspots", "session_id": "test-dossier-session"},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    dossier = data["dossier"]
+    assert "FACTUAL DATABASE EVIDENCE" in dossier
+    assert "PROSECUTORIAL AI INFERENCES" in dossier
+    assert "RECOMMENDED INVESTIGATIVE LEADS" in dossier
+    assert "[FIR-" in dossier
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__]))

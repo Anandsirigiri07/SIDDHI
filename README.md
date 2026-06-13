@@ -159,9 +159,8 @@ SIDDHI solves these challenges by combining a secure FastAPI backend, a responsi
 
 ## 8. Demo Users (Local Development Only)
 Demo accounts are **not** created by default. To enable them, set `SEED_DEMO_USERS=true`
-before running `python seed.py`. The password for all demo accounts comes from
-`DEMO_USER_PASSWORD`; if unset, a random password is generated and printed once
-during seeding. Never enable demo users in production.
+before running `python seed.py`. The local development password for all demo accounts is
+`password123` (configured via `DEMO_USER_PASSWORD` in your `.env` file). Never enable demo users in production.
 
 | Username | Role | Access Level |
 | :--- | :--- | :--- |

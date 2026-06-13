@@ -132,3 +132,107 @@ export const fetchForecast = async (): Promise<ForecastData> => {
   const response = await api.get<ForecastData>('/api/forecast');
   return response.data;
 };
+
+export interface EntityField<T> {
+  value: T;
+  confidence: number;
+}
+
+export interface FIRData {
+  fir_number: EntityField<string>;
+  date: EntityField<string>;
+  crime_type: EntityField<string>;
+  description: EntityField<string>;
+  status: EntityField<string>;
+  location_name: EntityField<string>;
+  station_area: EntityField<string>;
+  district: EntityField<string>;
+}
+
+export interface AccusedData {
+  name: EntityField<string>;
+  age: EntityField<number>;
+  gender: EntityField<string>;
+  occupation: EntityField<string>;
+  address: EntityField<string>;
+  role: EntityField<string>;
+}
+
+export interface VictimData {
+  name: EntityField<string>;
+  age: EntityField<number>;
+  gender: EntityField<string>;
+}
+
+export interface IngestDraft {
+  fir: FIRData;
+  accused: AccusedData[];
+  victims: VictimData[];
+}
+
+export interface IngestDraftResponse {
+  success: boolean;
+  metadata: {
+    timestamp: string;
+    operator: string;
+    filename: string;
+    file_size_bytes: number;
+    mime_type: string;
+  };
+  draft: IngestDraft;
+}
+
+export interface ConfirmIngestPayload {
+  fir: {
+    fir_number: string;
+    date: string;
+    crime_type: string;
+    description: string;
+    status: string;
+    location_name: string;
+    station_area: string;
+    district: string;
+  };
+  accused: Array<{
+    name: string;
+    age: number;
+    gender: string;
+    occupation: string;
+    address: string;
+    role: string;
+  }>;
+  victims: Array<{
+    name: string;
+    age: number;
+    gender: string;
+  }>;
+  document_reference: string;
+}
+
+export interface DossierResponse {
+  success: boolean;
+  query: string;
+  dossier: string;
+  execution_mode: string;
+}
+
+export const generateDossier = async (query: string, sessionId: string): Promise<DossierResponse> => {
+  const response = await api.post<DossierResponse>('/api/dossier', { query, session_id: sessionId });
+  return response.data;
+};
+
+export const parseDocument = async (file: File): Promise<IngestDraftResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await api.post<IngestDraftResponse>('/api/ingest/parse', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+  return response.data;
+};
+
+export const confirmIngestion = async (payload: ConfirmIngestPayload): Promise<{ success: boolean; fir_id: number; fir_number: string }> => {
+  const response = await api.post<{ success: boolean; fir_id: number; fir_number: string }>('/api/ingest/confirm', payload);
+  return response.data;
+};

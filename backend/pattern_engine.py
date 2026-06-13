@@ -53,7 +53,7 @@ def detect_hotspots(sql_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         lid = row.get("location_id")
         lat = row.get("lat")
         lng = row.get("lng")
-        loc_name = row.get("loc_name") or row.get("name")
+        loc_name = row.get("loc_name") or row.get("name") or row.get("location_name")
         
         # If coordinates are missing, try to resolve via location_id or loc_name
         if (lat is None or lng is None) and lid in loc_map:
@@ -181,7 +181,8 @@ def detect_hotspots(sql_results: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "dominant_crime": dominant_crime,
                 "severity": severity_level,
                 "fir_ids": f_ids,
-                "date_range": f"{min(f['date'] for f in fir_list)} to {max(f['date'] for f in fir_list)}"
+                "date_range": f"{min(f['date'] for f in fir_list)} to {max(f['date'] for f in fir_list)}",
+                "dates": [f["date"] for f in fir_list]
             }
         }
         geojson_features.append(feature)

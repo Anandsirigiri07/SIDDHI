@@ -136,6 +136,41 @@ def test_fir_metadata_details():
     assert "victims" in data
     assert "accused" in data
 
+def test_document_rejection():
+    """Verify that document parsing endpoint rejects resumes or other unrelated documents."""
+    analyst_res = client.post("/api/auth/login", json={"username": "analyst", "password": "password123"})
+    token = analyst_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    from io import BytesIO
+
+    # 1. Test resume filename rejection
+    response_cv = client.post(
+        "/api/ingest/parse",
+        files={"file": ("my_resume_2026.pdf", BytesIO(b"Resume content..."), "application/pdf")},
+        headers=headers
+    )
+    assert response_cv.status_code == 400
+    assert "rejected" in response_cv.json()["detail"].lower()
+
+    # 2. Test resume content text-signature rejection
+    response_content = client.post(
+        "/api/ingest/parse",
+        files={"file": ("random_name.txt", BytesIO(b"Skills summary:\nEducation: Bachelor of Science\nWork Experience: developer"), "text/plain")},
+        headers=headers
+    )
+    assert response_content.status_code == 400
+    assert "rejected" in response_content.json()["detail"].lower()
+
+    # 3. Test valid crime report file parses successfully
+    response_valid = client.post(
+        "/api/ingest/parse",
+        files={"file": ("burglary_report.png", BytesIO(b"Case notes about a burglary in Koramangala"), "image/png")},
+        headers=headers
+    )
+    assert response_valid.status_code == 200
+    assert response_valid.json()["success"] is True
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__]))

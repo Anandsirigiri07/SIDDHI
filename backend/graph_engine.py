@@ -13,9 +13,9 @@ def extract_ids_from_results(sql_results: List[Dict[str, Any]]) -> Tuple[List[in
             if not isinstance(v, int):
                 continue
             k_lower = k.lower()
-            if "fir_id" in k_lower:
+            if k_lower == "fir_id":
                 fir_ids.append(v)
-            elif "accused_id" in k_lower:
+            elif k_lower == "accused_id":
                 accused_ids.append(v)
             elif k_lower == "id":
                 if "fir" in str(row.get("fir_number", "")).lower():
@@ -53,15 +53,15 @@ def build_network_graph(sql_results: List[Dict[str, Any]]) -> Dict[str, Any]:
             if associated_fir_ids:
                 fir_pl = ",".join(str(fid) for fid in associated_fir_ids)
                 fir_rows = conn.execute(text(f"""
-                    SELECT f.fir_id, f.fir_number, f.crime_type, f.location_id, l.name as loc_name 
+                    SELECT f.fir_id, f.fir_number, f.crime_type, f.location_id, l.name as loc_name, f.date 
                     FROM firs f 
                     LEFT JOIN locations l ON f.location_id = l.location_id
                     WHERE f.fir_id IN ({fir_pl})
                 """)).fetchall()
                 
                 for row in fir_rows:
-                    fid, fnum, ctype, lid, lname = row
-                    G.add_node(f"fir-{fid}", label=fnum, type="FIR", crime_type=ctype)
+                    fid, fnum, ctype, lid, lname, fdate = row
+                    G.add_node(f"fir-{fid}", label=fnum, type="FIR", crime_type=ctype, date=fdate)
                     
                     # Link to seed accused
                     for fa_row in fir_acc_rows:
@@ -89,15 +89,15 @@ def build_network_graph(sql_results: List[Dict[str, Any]]) -> Dict[str, Any]:
             # Expand starting from FIRs
             fir_pl = ",".join(str(fid) for fid in fir_ids)
             fir_rows = conn.execute(text(f"""
-                SELECT f.fir_id, f.fir_number, f.crime_type, f.location_id, l.name as loc_name 
+                SELECT f.fir_id, f.fir_number, f.crime_type, f.location_id, l.name as loc_name, f.date 
                 FROM firs f 
                 LEFT JOIN locations l ON f.location_id = l.location_id
                 WHERE f.fir_id IN ({fir_pl})
             """)).fetchall()
             
             for row in fir_rows:
-                fid, fnum, ctype, lid, lname = row
-                G.add_node(f"fir-{fid}", label=fnum, type="FIR", crime_type=ctype)
+                fid, fnum, ctype, lid, lname, fdate = row
+                G.add_node(f"fir-{fid}", label=fnum, type="FIR", crime_type=ctype, date=fdate)
                 if lid:
                     G.add_node(f"loc-{lid}", label=lname, type="Location")
                     G.add_edge(f"fir-{fid}", f"loc-{lid}", relation="happened_at")
@@ -121,7 +121,7 @@ def build_network_graph(sql_results: List[Dict[str, Any]]) -> Dict[str, Any]:
             if accused_found_ids:
                 acc_pl = ",".join(str(aid) for aid in accused_found_ids)
                 other_fir_acc_rows = conn.execute(text(f"""
-                    SELECT fa.fir_id, fa.accused_id, fa.role, f.fir_number, f.crime_type 
+                    SELECT fa.fir_id, fa.accused_id, fa.role, f.fir_number, f.crime_type, f.date 
                     FROM fir_accused fa
                     JOIN firs f ON fa.fir_id = f.fir_id
                     WHERE fa.accused_id IN ({acc_pl}) AND fa.fir_id NOT IN ({fir_pl})
@@ -129,8 +129,8 @@ def build_network_graph(sql_results: List[Dict[str, Any]]) -> Dict[str, Any]:
                 """)).fetchall()
                 
                 for row in other_fir_acc_rows:
-                    fid, aid, role, fnum, ctype = row
-                    G.add_node(f"fir-{fid}", label=fnum, type="FIR", crime_type=ctype)
+                    fid, aid, role, fnum, ctype, fdate = row
+                    G.add_node(f"fir-{fid}", label=fnum, type="FIR", crime_type=ctype, date=fdate)
                     G.add_edge(f"fir-{fid}", f"accused-{aid}", relation="accused_in", role=role)
 
     # If the constructed graph has no nodes, return empty payload
@@ -190,6 +190,26 @@ def build_network_graph(sql_results: List[Dict[str, Any]]) -> Dict[str, Any]:
             node_entry["risk_score"] = attrs["risk_score"]
         if "crime_type" in attrs:
             node_entry["crime_type"] = attrs["crime_type"]
+        if "date" in attrs:
+            node_entry["date"] = attrs["date"]
+            
+        # Calculate bridge suspect score (only for Accused nodes)
+        if attrs.get("type") == "Accused":
+            neighbors = list(G.neighbors(node))
+            neighbor_communities = set([communities_map.get(n, 0) for n in neighbors])
+            bt = betweenness_scores.get(node, 0.0)
+            
+            if len(neighbor_communities) > 1 and bt > 0.0:
+                # Suspect connects FIRs in multiple Louvain communities
+                bridge_score = min(1.0, bt * len(neighbor_communities) * 3)
+            else:
+                bridge_score = 0.0
+                
+            node_entry["bridge_score"] = round(bridge_score, 4)
+            node_entry["is_bridge"] = bridge_score > 0.05 or (len(neighbor_communities) > 1 and bt > 0.01)
+        else:
+            node_entry["bridge_score"] = 0.0
+            node_entry["is_bridge"] = False
             
         nodes_list.append(node_entry)
 

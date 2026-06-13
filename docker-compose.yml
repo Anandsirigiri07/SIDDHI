@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/siddhi.db:/app/siddhi.db
+    environment:
+      - DATABASE_URL=sqlite:///./siddhi.db
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - SEED_DEMO_USERS=${SEED_DEMO_USERS}
+      - DEMO_USER_PASSWORD=${DEMO_USER_PASSWORD}
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    restart: always

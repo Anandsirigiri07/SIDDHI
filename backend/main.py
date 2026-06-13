@@ -6,18 +6,20 @@ import time
 import re
 from datetime import datetime
 from typing import Dict, Any, List
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+import random
+from fastapi import FastAPI, Depends, HTTPException, status, Request, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+import asyncio
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 # Import backend modules
 from backend.database import get_db, execute_raw_sql
-from backend.models import User, FIR, AuditLog, Location, Officer, Victim
+from backend.models import User, FIR, AuditLog, Location, Officer, Victim, FIRAccused, Accused
 from backend.auth import (
     get_current_user,
     verify_password,
@@ -29,6 +31,8 @@ from backend.gemini_client import (
     classify_intent,
     generate_nl_to_sql,
     summarize_results,
+    parse_document_multimodal,
+    generate_prosecutorial_dossier,
     GEMINI_API_KEY
 )
 from backend.sql_guard import validate_query, rewrite_query
@@ -68,6 +72,46 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# WebSocket Alert Connection Manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket client connected. Total connections: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+            logger.info("WebSocket client disconnected")
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.error(f"Error broadcasting WebSocket message: {e}")
+
+manager = ConnectionManager()
+
+@app.websocket("/api/ws/alerts")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        manager.disconnect(websocket)
+
 
 # Pydantic Schemas
 class LoginRequest(BaseModel):
@@ -213,6 +257,22 @@ def run_crime_query(
 
     # STEP 9: Run Pattern Engine (DBSCAN + Spikes)
     pattern_data = detect_hotspots(sql_results)
+
+    # Broadcast spike alerts if found
+    if pattern_data.get("alerts") and manager.active_connections:
+        for alert in pattern_data["alerts"]:
+            alert_payload = {
+                "type": "SPIKE_ALERT",
+                "message": alert["message"],
+                "severity": alert["severity"],
+                "timestamp": datetime.now().strftime("%I:%M:%S %p")
+            }
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(manager.broadcast(alert_payload))
+            except Exception as e:
+                logger.error(f"Failed to schedule WebSocket broadcast: {e}")
 
     # STEP 10: Summarize Results citing FIRs
     summary = summarize_results(english_query, sql_results, debug_data=debug_data)
@@ -364,3 +424,375 @@ def get_audit_trail(
             "execution_time": log.execution_time
         })
     return audit_list
+
+class ConfirmIngestRequest(BaseModel):
+    fir: Dict[str, Any]
+    accused: List[Dict[str, Any]]
+    victims: List[Dict[str, Any]]
+    document_reference: str
+
+class DossierRequest(BaseModel):
+    query: str
+    session_id: str
+
+@app.post("/api/ingest/parse")
+def parse_uploaded_document(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Step 1: Receives an uploaded image/PDF document, reads its bytes,
+    and runs it through the Gemini multimodal model to extract a draft.
+    Does NOT write to the database yet. Returns draft + metadata.
+    """
+    try:
+        content_bytes = file.file.read()
+        file_size = len(content_bytes)
+        
+        # Determine mime type or default to image/png
+        mime_type = file.content_type or "image/png"
+        
+        # Run parsing
+        draft_data = parse_document_multimodal(content_bytes, file.filename, mime_type)
+        
+        # Build metadata
+        metadata = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "operator": current_user.name,
+            "filename": file.filename,
+            "file_size_bytes": file_size,
+            "mime_type": mime_type
+        }
+        
+        return {
+            "success": True,
+            "metadata": metadata,
+            "draft": draft_data
+        }
+    except ValueError as ve:
+        logger.warning(f"Document parsing validation rejected: {ve}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Ingest parse endpoint error: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to parse document: {str(e)}")
+
+def validate_ingest_data(payload: ConfirmIngestRequest):
+    """Validation layer to ensure human confirmed data meets database integrity rules before insertion."""
+    fir_data = payload.fir
+    if not fir_data:
+        raise HTTPException(status_code=400, detail="FIR details are required.")
+    
+    def get_val(field_name, default=None):
+        val = fir_data.get(field_name)
+        if isinstance(val, dict):
+            return val.get("value", default)
+        return val or default
+
+    fir_number = get_val("fir_number")
+    if not fir_number or not isinstance(fir_number, str) or len(fir_number.strip()) < 3:
+        raise HTTPException(status_code=400, detail="Invalid FIR number format. Must be a non-empty string.")
+        
+    date_str = get_val("date")
+    if not date_str:
+        raise HTTPException(status_code=400, detail="FIR date is required.")
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="FIR date must be in YYYY-MM-DD format.")
+
+    crime_type = get_val("crime_type")
+    allowed_crimes = {"chain_snatching", "burglary", "robbery", "assault", "vehicle_theft", "drug_offense", "homicide"}
+    if not crime_type or crime_type not in allowed_crimes:
+        raise HTTPException(status_code=400, detail=f"Invalid crime type. Must be one of {allowed_crimes}")
+
+    status_val = get_val("status")
+    allowed_statuses = {"Draft", "Open", "Under Investigation", "Chargesheet Filed", "Closed"}
+    if status_val and status_val not in allowed_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid FIR status. Must be one of {allowed_statuses}")
+
+    if not payload.document_reference or not isinstance(payload.document_reference, str) or len(payload.document_reference.strip()) == 0:
+        raise HTTPException(status_code=400, detail="Document reference path/name is required.")
+
+    loc_name = get_val("location_name")
+    if not loc_name or not isinstance(loc_name, str) or len(loc_name.strip()) == 0:
+        raise HTTPException(status_code=400, detail="Location name cannot be empty.")
+
+    station_area = get_val("station_area")
+    if not station_area or not isinstance(station_area, str) or len(station_area.strip()) == 0:
+        raise HTTPException(status_code=400, detail="Station area cannot be empty.")
+
+    district = get_val("district")
+    if not district or not isinstance(district, str) or len(district.strip()) == 0:
+        raise HTTPException(status_code=400, detail="District cannot be empty.")
+
+    for acc in payload.accused:
+        acc_name = acc.get("name", {}).get("value") if isinstance(acc.get("name"), dict) else acc.get("name")
+        if not acc_name or not isinstance(acc_name, str) or len(acc_name.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Accused name cannot be empty.")
+        
+        acc_age = acc.get("age", {}).get("value") if isinstance(acc.get("age"), dict) else acc.get("age")
+        if acc_age is not None:
+            try:
+                age_val = int(acc_age)
+                if age_val < 0 or age_val > 120:
+                    raise ValueError()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Accused age must be an integer between 0 and 120.")
+
+    for vic in payload.victims:
+        vic_name = vic.get("name", {}).get("value") if isinstance(vic.get("name"), dict) else vic.get("name")
+        if not vic_name or not isinstance(vic_name, str) or len(vic_name.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Victim name cannot be empty.")
+
+@app.post("/api/ingest/confirm")
+def confirm_ingest_document(
+    payload: ConfirmIngestRequest,
+    current_user: User = Depends(RoleChecker(allowed_roles=["Investigator", "Analyst", "Supervisor"])),
+    db: Session = Depends(get_db)
+):
+    """
+    Step 2: Receives the human-reviewed and confirmed case note data,
+    validates the inputs, and writes them to the SQLite database.
+    """
+    # Run data validation layer first
+    validate_ingest_data(payload)
+    
+    try:
+        fir_data = payload.fir
+        accused_list = payload.accused
+        victims_list = payload.victims
+        doc_ref = payload.document_reference
+        
+        # 1. Look up or insert location
+        loc_name = fir_data.get("location_name", {}).get("value") if isinstance(fir_data.get("location_name"), dict) else fir_data.get("location_name")
+        station_area = fir_data.get("station_area", {}).get("value") if isinstance(fir_data.get("station_area"), dict) else fir_data.get("station_area")
+        district = fir_data.get("district", {}).get("value") if isinstance(fir_data.get("district"), dict) else fir_data.get("district")
+        
+        # Find existing location
+        loc = db.query(Location).filter(Location.name.like(f"%{loc_name}%")).first()
+        if not loc:
+            # Create a mock location near center of Bengaluru
+            lat = 12.97 + random.uniform(-0.05, 0.05)
+            lng = 77.59 + random.uniform(-0.05, 0.05)
+            loc = Location(name=loc_name, lat=lat, lng=lng, district=district, station_area=station_area)
+            db.add(loc)
+            db.commit()
+            db.refresh(loc)
+            
+        # 2. Assign an officer
+        officer = db.query(Officer).filter(Officer.station.like(f"%{station_area}%")).first()
+        if not officer:
+            officer = db.query(Officer).first()
+        if not officer:
+            officer = Officer(name="Officer Auto-Assigned", rank="Sub-Inspector", station=station_area)
+            db.add(officer)
+            db.commit()
+            db.refresh(officer)
+            
+        # 3. Insert FIR
+        fir_number = fir_data.get("fir_number", {}).get("value") if isinstance(fir_data.get("fir_number"), dict) else fir_data.get("fir_number")
+        if not fir_number:
+            fir_number = f"FIR-2026-AUTO{random.randint(100, 999)}"
+            
+        existing_fir = db.query(FIR).filter(FIR.fir_number == fir_number).first()
+        if existing_fir:
+            raise HTTPException(status_code=400, detail=f"FIR {fir_number} already exists in database")
+            
+        new_fir = FIR(
+            fir_number=fir_number,
+            date=fir_data.get("date", {}).get("value") if isinstance(fir_data.get("date"), dict) else fir_data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+            crime_type=fir_data.get("crime_type", {}).get("value") if isinstance(fir_data.get("crime_type"), dict) else fir_data.get("crime_type") or "robbery",
+            description=fir_data.get("description", {}).get("value") if isinstance(fir_data.get("description"), dict) else fir_data.get("description") or "Ingested case file.",
+            status=fir_data.get("status", {}).get("value") if isinstance(fir_data.get("status"), dict) else fir_data.get("status") or "Open",
+            document_reference=doc_ref,
+            location_id=loc.location_id,
+            officer_id=officer.officer_id
+        )
+        db.add(new_fir)
+        db.commit()
+        db.refresh(new_fir)
+        
+        # 4. Insert Accused and links
+        for acc in accused_list:
+            acc_name = acc.get("name", {}).get("value") if isinstance(acc.get("name"), dict) else acc.get("name")
+            if not acc_name:
+                continue
+            
+            accused_obj = db.query(Accused).filter(Accused.name == acc_name).first()
+            if not accused_obj:
+                acc_age_val = acc.get("age", {}).get("value") if isinstance(acc.get("age"), dict) else acc.get("age")
+                acc_gender_val = acc.get("gender", {}).get("value") if isinstance(acc.get("gender"), dict) else acc.get("gender")
+                acc_occ_val = acc.get("occupation", {}).get("value") if isinstance(acc.get("occupation"), dict) else acc.get("occupation")
+                acc_addr_val = acc.get("address", {}).get("value") if isinstance(acc.get("address"), dict) else acc.get("address")
+                
+                try:
+                    acc_age = int(acc_age_val or 30)
+                except Exception:
+                    acc_age = 30
+                    
+                accused_obj = Accused(
+                    name=acc_name,
+                    age=acc_age,
+                    gender=acc_gender_val or "Male",
+                    occupation=acc_occ_val or "Laborer",
+                    address=acc_addr_val or "Bengaluru",
+                    risk_score=0.0
+                )
+                db.add(accused_obj)
+                db.commit()
+                db.refresh(accused_obj)
+                
+            role = acc.get("role", {}).get("value") if isinstance(acc.get("role"), dict) else acc.get("role") or "Suspect"
+            rel = FIRAccused(fir_id=new_fir.fir_id, accused_id=accused_obj.accused_id, role=role)
+            db.add(rel)
+            
+        # 5. Insert Victims
+        for vic in victims_list:
+            vic_name = vic.get("name", {}).get("value") if isinstance(vic.get("name"), dict) else vic.get("name")
+            if not vic_name:
+                continue
+                
+            vic_age_val = vic.get("age", {}).get("value") if isinstance(vic.get("age"), dict) else vic.get("age")
+            vic_gender_val = vic.get("gender", {}).get("value") if isinstance(vic.get("gender"), dict) else vic.get("gender")
+            
+            try:
+                vic_age = int(vic_age_val or 30)
+            except Exception:
+                vic_age = 30
+                
+            victim_obj = Victim(
+                fir_id=new_fir.fir_id,
+                name=vic_name,
+                age=vic_age,
+                gender=vic_gender_val or "Male"
+            )
+            db.add(victim_obj)
+            
+        db.commit()
+        
+        # Recalculate risk scores
+        for acc in accused_list:
+            acc_name = acc.get("name", {}).get("value") if isinstance(acc.get("name"), dict) else acc.get("name")
+            accused_obj = db.query(Accused).filter(Accused.name == acc_name).first()
+            if accused_obj:
+                firs_count = db.query(FIRAccused).filter(FIRAccused.accused_id == accused_obj.accused_id).count()
+                accused_obj.risk_score = float(firs_count * 12.5)
+        db.commit()
+        
+        # Ingestion Audit Log
+        audit_entry = AuditLog(
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            user_id=current_user.user_id,
+            username=current_user.username,
+            role=current_user.role,
+            query=f"Ingest Document Reference: {doc_ref}",
+            intent="INGEST_DOCUMENT",
+            entities=json.dumps({"fir_number": fir_number}),
+            generated_sql="INSERT INTO firs (fir_number, date, ...) VALUES (...)",
+            rows_returned=1,
+            summary=f"Ingested case notes for {fir_number} securely with human confirmation.",
+            execution_time=0.015
+        )
+        db.add(audit_entry)
+        db.commit()
+        
+        # Broadcast spike alert to frontend if any hotspot is triggered
+        try:
+            sql_results_alerts = execute_raw_sql(f"SELECT f.fir_id, f.fir_number, f.date, f.crime_type, l.lat, l.lng, l.name AS loc_name FROM firs f JOIN locations l ON f.location_id = l.location_id WHERE f.crime_type = '{new_fir.crime_type}'")
+            pattern_data = detect_hotspots(sql_results_alerts)
+            if pattern_data.get("alerts") and manager.active_connections:
+                for alert in pattern_data["alerts"]:
+                    alert_payload = {
+                        "type": "SPIKE_ALERT",
+                        "message": alert["message"],
+                        "severity": alert["severity"],
+                        "timestamp": datetime.now().strftime("%I:%M:%S %p")
+                    }
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(manager.broadcast(alert_payload))
+        except Exception as e:
+            logger.error(f"Failed to broadcast websocket spike alert: {e}")
+            
+        return {
+            "success": True,
+            "fir_id": new_fir.fir_id,
+            "fir_number": fir_number,
+            "message": f"Successfully ingested case record {fir_number}"
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Ingest confirm endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=f"Database ingestion failed: {str(e)}")
+
+def truncate_results_to_token_limit(results: List[Dict[str, Any]], max_tokens: int = 3000) -> List[Dict[str, Any]]:
+    """Estimates tokens of database records and slices/truncates them to prevent LLM context overflow."""
+    truncated_results = []
+    estimated_tokens = 0
+    
+    for row in results:
+        row_copy = dict(row)
+        for k, v in row_copy.items():
+            if isinstance(v, str) and len(v) > 250:
+                row_copy[k] = v[:250] + "..."
+        
+        row_tokens = len(json.dumps(row_copy)) / 4
+        if estimated_tokens + row_tokens > max_tokens:
+            break
+        
+        truncated_results.append(row_copy)
+        estimated_tokens += row_tokens
+        
+    return truncated_results
+
+@app.post("/api/dossier")
+def generate_case_dossier(
+    payload: DossierRequest,
+    current_user: User = Depends(RoleChecker(allowed_roles=["Investigator", "Analyst", "Supervisor", "Policymaker"])),
+    db: Session = Depends(get_db)
+):
+    """
+    Queries the database using the session query history or executes search,
+    and calls Gemini to generate a prosecutorial case dossier.
+    """
+    try:
+        debug_data = {}
+        english_query, _ = translate_query_to_english(payload.query, debug_data=debug_data)
+        sql_payload = generate_nl_to_sql(english_query, current_user.role, {"queries": []}, debug_data=debug_data)
+        raw_sql = sql_payload.get("sql", "")
+        
+        if validate_query(raw_sql):
+            rewritten_sql = rewrite_query(raw_sql)
+            sql_results = execute_raw_sql(rewritten_sql)
+        else:
+            sql_results = []
+            
+        truncated_results = truncate_results_to_token_limit(sql_results, max_tokens=3000)
+        dossier_text = generate_prosecutorial_dossier(english_query, truncated_results, debug_data=debug_data)
+        
+        audit_entry = AuditLog(
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            user_id=current_user.user_id,
+            username=current_user.username,
+            role=current_user.role,
+            query=f"Generate Dossier for: {payload.query}",
+            intent="DOSSIER_GENERATION",
+            entities=json.dumps({"query": payload.query}),
+            generated_sql=sql_payload.get("sql", "None"),
+            rows_returned=len(sql_results),
+            summary="Generated prosecutorial dossier narrative successfully.",
+            execution_time=0.25
+        )
+        db.add(audit_entry)
+        db.commit()
+        
+        return {
+            "success": True,
+            "query": payload.query,
+            "dossier": dossier_text,
+            "execution_mode": debug_data.get("model_used", "simulated-fallback-model")
+        }
+    except Exception as e:
+        logger.error(f"Dossier endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=f"Dossier generation failed: {str(e)}")

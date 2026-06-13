@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS firs (
     crime_type TEXT NOT NULL,
     description TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('Draft', 'Open', 'Under Investigation', 'Chargesheet Filed', 'Closed')),
+    document_reference TEXT,
     location_id INTEGER NOT NULL,
     officer_id INTEGER NOT NULL,
     FOREIGN KEY(location_id) REFERENCES locations(location_id) ON DELETE RESTRICT,
