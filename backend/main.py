@@ -64,14 +64,15 @@ def startup_event():
         logger.warning("Gemini API Key Detected: FALSE")
 
 
-# Setup CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], # Adjust in production
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Setup CORS - Only enable locally; Catalyst API Gateway (ZGS) handles CORS in cloud
+if not os.getenv("X_ZOHO_CATALYST_LISTEN_PORT"):
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # WebSocket Alert Connection Manager
 class ConnectionManager:
