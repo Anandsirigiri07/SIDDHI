@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { getSessionToken, clearSession } from './auth';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://siddhi-api-v2-50043097496.development.catalystappsail.in';
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
