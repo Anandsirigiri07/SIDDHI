@@ -1,0 +1,214 @@
+{
+    "algorithm": "RandomForest",
+    "features": [
+        "pagerank_score",
+        "betweenness_score",
+        "degree_centrality",
+        "closeness",
+        "prior_case_count",
+        "gang_score",
+        "risk_factor_score",
+        "age",
+        "gender_code",
+        "organized_crime_score"
+    ],
+    "target": "repeat_offender_target",
+    "train_size": 2801,
+    "val_size": 1321,
+    "test_size": 621,
+    "metrics": {
+        "validation": {
+            "accuracy": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "roc_auc": 1.0,
+            "calibration": {
+                "true_probs": [
+                    0.0,
+                    1.0
+                ],
+                "pred_probs": [
+                    0.0,
+                    0.6
+                ]
+            },
+            "confusion_matrix": [
+                [
+                    1320,
+                    0
+                ],
+                [
+                    0,
+                    1
+                ]
+            ]
+        },
+        "test": {
+            "accuracy": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "roc_auc": 1.0,
+            "calibration": {
+                "true_probs": [
+                    0.0,
+                    1.0,
+                    1.0
+                ],
+                "pred_probs": [
+                    0.0,
+                    0.6,
+                    0.9997333333333334
+                ]
+            },
+            "confusion_matrix": [
+                [
+                    4667,
+                    0
+                ],
+                [
+                    0,
+                    76
+                ]
+            ]
+        },
+        "all_candidates": {
+            "RandomForest": {
+                "accuracy": 1.0,
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1": 1.0,
+                "roc_auc": 1.0,
+                "calibration": {
+                    "true_probs": [
+                        0.0,
+                        1.0
+                    ],
+                    "pred_probs": [
+                        0.0,
+                        0.6
+                    ]
+                },
+                "confusion_matrix": [
+                    [
+                        1320,
+                        0
+                    ],
+                    [
+                        0,
+                        1
+                    ]
+                ]
+            },
+            "GradientBoosting": {
+                "accuracy": 1.0,
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1": 1.0,
+                "roc_auc": 1.0,
+                "calibration": {
+                    "true_probs": [
+                        0.0,
+                        1.0
+                    ],
+                    "pred_probs": [
+                        1.2139586545398237e-06,
+                        0.9673574253495509
+                    ]
+                },
+                "confusion_matrix": [
+                    [
+                        1320,
+                        0
+                    ],
+                    [
+                        0,
+                        1
+                    ]
+                ]
+            },
+            "ExtraTrees": {
+                "accuracy": 1.0,
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1": 1.0,
+                "roc_auc": 1.0,
+                "calibration": {
+                    "true_probs": [
+                        0.0,
+                        1.0
+                    ],
+                    "pred_probs": [
+                        0.0,
+                        0.82
+                    ]
+                },
+                "confusion_matrix": [
+                    [
+                        1320,
+                        0
+                    ],
+                    [
+                        0,
+                        1
+                    ]
+                ]
+            }
+        }
+    },
+    "global_importances": {
+        "pagerank_score": {
+            "native": 0.15,
+            "permutation": 0.0,
+            "composite": 0.075
+        },
+        "closeness": {
+            "native": 0.14,
+            "permutation": 0.0,
+            "composite": 0.07
+        },
+        "organized_crime_score": {
+            "native": 0.14,
+            "permutation": 0.0,
+            "composite": 0.07
+        },
+        "prior_case_count": {
+            "native": 0.14,
+            "permutation": 0.0,
+            "composite": 0.07
+        },
+        "gang_score": {
+            "native": 0.12,
+            "permutation": 0.0,
+            "composite": 0.06
+        },
+        "risk_factor_score": {
+            "native": 0.11,
+            "permutation": 0.0,
+            "composite": 0.055
+        },
+        "betweenness_score": {
+            "native": 0.1,
+            "permutation": 0.0,
+            "composite": 0.05
+        },
+        "degree_centrality": {
+            "native": 0.1,
+            "permutation": 0.0,
+            "composite": 0.05
+        },
+        "age": {
+            "native": 0.0,
+            "permutation": 0.0,
+            "composite": 0.0
+        },
+        "gender_code": {
+            "native": 0.0,
+            "permutation": 0.0,
+            "composite": 0.0
+        }
+    },
+    "saved_at": "2026-06-27T14:05:30.414133",
+    "model_file": "repeat_offender.pkl"
+}

@@ -1,0 +1,18 @@
+{
+  "build": {
+    "command": "docker build -t siddhi-backend .",
+    "target": "siddhi-backend"
+  },
+  "run": {
+    "port": 8000
+  },
+  "environment_variables": {
+    "USE_CATALYST": "true",
+    "USE_SMARTBROWZ": "true",
+    "USE_STRATUS": "true",
+    "USE_LOCAL_FALLBACK": "true",
+    "JWT_SECRET_KEY": "siddhi_super_secret_karnataka_police_key_2026",
+    "ALGORITHM": "HS256",
+    "ACCESS_TOKEN_EXPIRE_MINUTES": "120"
+  }
+}

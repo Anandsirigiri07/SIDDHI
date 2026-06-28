@@ -1,0 +1,5 @@
+{
+  "stack": "node20",
+  "command": "node server.js",
+  "memory": 256
+}

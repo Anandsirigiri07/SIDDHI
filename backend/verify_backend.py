@@ -48,18 +48,23 @@ def run_verification():
         for line in req:
             print(f"  {line.strip()}")
 
-    db_path = "siddhi.db"
+    from backend.database import DATABASE_URL
+    if DATABASE_URL.startswith("sqlite:///"):
+        db_path = DATABASE_URL.replace("sqlite:///", "")
+    else:
+        db_path = "backend/siddhi.db"
+        
     if os.path.exists(db_path):
         size_bytes = os.path.getsize(db_path)
         print(f"\nDatabase File Size: {size_bytes / 1024:.2f} KB ({size_bytes} bytes)")
     else:
-        print("\nDatabase File not found at siddhi.db!")
+        print(f"\nDatabase File not found at {db_path}!")
 
     print("\n=========================================================")
     print("SECTION 2 — DATABASE VERIFICATION")
     print("=========================================================")
     tables = ["firs", "accused", "victims", "locations", "officers", "users", "audit_logs"]
-    conn = sqlite3.connect("siddhi.db")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     for t in tables:

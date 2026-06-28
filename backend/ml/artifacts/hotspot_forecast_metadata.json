@@ -1,0 +1,104 @@
+{
+    "algorithm": "RandomForest",
+    "features": [
+        "crime_density",
+        "cluster_risk",
+        "repeat_offender_density",
+        "severity_density",
+        "historical_baseline",
+        "weekly_change",
+        "emerging_cluster"
+    ],
+    "target": "hotspot_growth_target",
+    "train_size": 7,
+    "val_size": 2,
+    "test_size": 1,
+    "metrics": {
+        "validation": {
+            "mae": 8.42,
+            "rmse": 9.652709464186726,
+            "r2": -2.726992,
+            "residuals": [
+                3.7,
+                13.14
+            ]
+        },
+        "test": {
+            "mae": 2.672,
+            "rmse": 4.52036281729686,
+            "r2": 0.06310499770747346,
+            "residuals": [
+                0.48,
+                0.4,
+                0.9199999999999999,
+                -2.46,
+                0.7199999999999998,
+                0.74,
+                -1.38,
+                3.7,
+                13.14,
+                2.78
+            ],
+            "mape": 12.694529692014212
+        },
+        "all_candidates": {
+            "RandomForest": {
+                "mae": 8.42,
+                "rmse": 9.652709464186726,
+                "r2": -2.726992,
+                "residuals": [
+                    3.7,
+                    13.14
+                ]
+            },
+            "GradientBoosting": {
+                "mae": 8.508696998022375,
+                "rmse": 10.33308731360076,
+                "r2": -3.270907737219879,
+                "residuals": [
+                    2.645697012832027,
+                    14.371696983212722
+                ]
+            }
+        }
+    },
+    "global_importances": {
+        "weekly_change": {
+            "native": 0.5009219812938716,
+            "permutation": 0.5601601694915255,
+            "composite": 0.5305410753926985
+        },
+        "historical_baseline": {
+            "native": 0.2912734828389581,
+            "permutation": 0.15139576271186447,
+            "composite": 0.22133462277541127
+        },
+        "severity_density": {
+            "native": 0.08221105491865596,
+            "permutation": 0.05320000000000006,
+            "composite": 0.06770552745932801
+        },
+        "repeat_offender_density": {
+            "native": 0.1255934809485145,
+            "permutation": -0.005623728813559252,
+            "composite": 0.05998487606747762
+        },
+        "crime_density": {
+            "native": 0.0,
+            "permutation": 0.0,
+            "composite": 0.0
+        },
+        "cluster_risk": {
+            "native": 0.0,
+            "permutation": 0.0,
+            "composite": 0.0
+        },
+        "emerging_cluster": {
+            "native": 0.0,
+            "permutation": 0.0,
+            "composite": 0.0
+        }
+    },
+    "saved_at": "2026-06-27T14:05:31.814745",
+    "model_file": "hotspot_forecast.pkl"
+}

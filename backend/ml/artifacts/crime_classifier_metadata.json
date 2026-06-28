@@ -1,0 +1,21 @@
+{
+    "algorithm": "TFIDF + KNN",
+    "features": [
+        "BriefFacts"
+    ],
+    "targets": [
+        "crime_head",
+        "crime_subhead"
+    ],
+    "train_size": 3392,
+    "val_size": 1638,
+    "test_size": 783,
+    "metrics": {
+        "test": {
+            "top_1_accuracy": 0.9386973180076629,
+            "top_3_accuracy": 0.9450830140485313
+        }
+    },
+    "saved_at": "2026-06-27T14:05:32.476411",
+    "model_file": "crime_classifier.pkl"
+}

@@ -15,7 +15,7 @@ def extract_ids_from_results(sql_results: List[Dict[str, Any]]) -> Tuple[List[in
             k_lower = k.lower()
             if k_lower == "fir_id":
                 fir_ids.append(v)
-            elif k_lower == "accused_id":
+            elif "accused_id" in k_lower or "accusedmasterid" in k_lower or k_lower == "accused_id":
                 accused_ids.append(v)
             elif k_lower == "id":
                 if "fir" in str(row.get("fir_number", "")).lower():
@@ -46,9 +46,10 @@ def build_network_graph(sql_results: List[Dict[str, Any]]) -> Dict[str, Any]:
                 aid, name, risk = row
                 G.add_node(f"accused-{aid}", label=name, type="Accused", risk_score=risk)
                 
-            # 2. Find associated FIRs (1-hop)
             fir_acc_rows = conn.execute(text(f"SELECT fir_id, accused_id, role FROM fir_accused WHERE accused_id IN ({acc_placeholder})")).fetchall()
             associated_fir_ids = list(set([row[0] for row in fir_acc_rows]))
+            if len(associated_fir_ids) > 6:
+                associated_fir_ids = associated_fir_ids[:6]
             
             if associated_fir_ids:
                 fir_pl = ",".join(str(fid) for fid in associated_fir_ids)

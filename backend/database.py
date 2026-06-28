@@ -3,7 +3,8 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./siddhi.db")
+db_dir = os.path.dirname(os.path.abspath(__file__))
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{os.path.join(db_dir, 'siddhi.db')}")
 
 connect_args = {}
 # For SQLite, disable cross-thread access check to prevent issues in multi-threaded FastAPI

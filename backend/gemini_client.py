@@ -7,12 +7,70 @@ import hashlib
 from sqlalchemy import text
 from datetime import datetime
 from functools import lru_cache
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
+from pydantic import BaseModel, Field
 import google.generativeai as genai
 
 # Setup Logger
 logger = logging.getLogger("siddhi.gemini_client")
 logging.basicConfig(level=logging.INFO)
+
+# Define Pydantic response models for Gemini Structured Outputs
+class EntitySubModel(BaseModel):
+    locations: List[str] = Field(default_factory=list)
+    crime_types: List[str] = Field(default_factory=list)
+    accused: List[str] = Field(default_factory=list)
+    time_ranges: List[str] = Field(default_factory=list)
+
+class IntentResponse(BaseModel):
+    intent: str
+    confidence: float
+    entities: EntitySubModel
+    requires_graph: bool
+    requires_map: bool
+    time_range: str
+
+class SqlQueryResponse(BaseModel):
+    sql: str
+    explanation: str
+
+class StringField(BaseModel):
+    value: str
+    confidence: float
+
+class IntField(BaseModel):
+    value: int
+    confidence: float
+
+class FIRFields(BaseModel):
+    fir_number: StringField
+    date: StringField
+    crime_type: StringField
+    description: StringField
+    status: StringField
+    location_name: StringField
+    station_area: StringField
+    district: StringField
+
+class AccusedFields(BaseModel):
+    name: StringField
+    age: IntField
+    gender: StringField
+    occupation: StringField
+    address: StringField
+    role: StringField
+
+class VictimFields(BaseModel):
+    name: StringField
+    age: IntField
+    gender: StringField
+
+class DocumentParseResponse(BaseModel):
+    error: Optional[str] = Field(default=None, description="Set to 'INVALID_DOCUMENT_TYPE' if the file is not a crime record, FIR, or police case notes.")
+    detail: Optional[str] = Field(default=None, description="Detail explaining why the file was rejected.")
+    fir: Optional[FIRFields] = None
+    accused: List[AccusedFields] = Field(default_factory=list)
+    victims: List[VictimFields] = Field(default_factory=list)
 
 # Load .env file manually if exists
 for env_dir in [os.path.dirname(__file__), os.path.join(os.path.dirname(__file__), "..")]:
@@ -54,7 +112,7 @@ def configure_active_key():
         return None
     idx = current_key_index % len(GEMINI_API_KEYS)
     active_key = GEMINI_API_KEYS[idx]
-    genai.configure(api_key=active_key)
+    genai.configure(api_key=active_key, transport='rest')
     return active_key
 
 # Perform initial configuration
@@ -82,8 +140,8 @@ def init_cache_db():
     except Exception as e:
         logger.error(f"Error initializing cache table: {e}")
 
-def generate_cache_key(prompt: str, system_instruction: str, is_json: bool) -> str:
-    hash_input = f"{prompt}||{system_instruction}||{1 if is_json else 0}"
+def generate_cache_key(prompt: str, system_instruction: str, is_json: bool, response_schema_name: str = "") -> str:
+    hash_input = f"{prompt}||{system_instruction}||{1 if is_json else 0}||{response_schema_name}"
     return hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
 
 @lru_cache(maxsize=1)
@@ -102,14 +160,21 @@ def get_cached_schema() -> str:
     logger.error("schema.sql file not found.")
     return ""
 
-def generate_text_gemini(prompt: str, system_instruction: str = "", is_json: bool = False, debug_data: Dict[str, Any] = None) -> str:
+def generate_text_gemini(
+    prompt: str, 
+    system_instruction: str = "", 
+    is_json: bool = False, 
+    response_schema: Any = None, 
+    debug_data: Dict[str, Any] = None
+) -> str:
     """Helper to send generative request to Gemini API, with cache lookup and simulated fallback."""
     global current_key_index
     import time
     
     # Initialize cache database and generate lookup key
     init_cache_db()
-    cache_key = generate_cache_key(prompt, system_instruction, is_json)
+    schema_name = response_schema.__name__ if hasattr(response_schema, "__name__") else ("raw_dict" if response_schema else "")
+    cache_key = generate_cache_key(prompt, system_instruction, is_json, schema_name)
     
     # 1. Cache Lookup
     try:
@@ -153,7 +218,10 @@ def generate_text_gemini(prompt: str, system_instruction: str = "", is_json: boo
                     system_instruction=system_instruction if system_instruction else None
                 )
                 generation_config = {}
-                if is_json:
+                if response_schema:
+                    generation_config["response_mime_type"] = "application/json"
+                    generation_config["response_schema"] = response_schema
+                elif is_json:
                     generation_config["response_mime_type"] = "application/json"
                     
                 response = model.generate_content(
@@ -238,6 +306,31 @@ def classify_intent(query: str, session_context: Dict[str, Any], debug_data: Dic
     Classifies intent of query using Gemini.
     Returns JSON: {intent, confidence, entities: {locations:[], crime_types:[], accused:[], time_ranges:[]}, requires_graph, requires_map, time_range}
     """
+    intent_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "intent": {
+                "type": "STRING",
+                "enum": ["RECORD_LOOKUP", "NETWORK_ANALYSIS", "PATTERN_ANALYSIS", "PROFILING", "FORECASTING", "GENERAL"]
+            },
+            "confidence": {"type": "NUMBER"},
+            "entities": {
+                "type": "OBJECT",
+                "properties": {
+                    "locations": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "crime_types": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "accused": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "time_ranges": {"type": "ARRAY", "items": {"type": "STRING"}}
+                },
+                "required": ["locations", "crime_types", "accused", "time_ranges"]
+            },
+            "requires_graph": {"type": "BOOLEAN"},
+            "requires_map": {"type": "BOOLEAN"},
+            "time_range": {"type": "STRING"}
+        },
+        "required": ["intent", "confidence", "entities", "requires_graph", "requires_map", "time_range"]
+    }
+
     system_instruction = (
         "You are the intent classifier for SIDDHI, a police crime intelligence platform.\n"
         "Analyze the user query along with historical conversation queries to determine:\n"
@@ -257,30 +350,43 @@ def classify_intent(query: str, session_context: Dict[str, Any], debug_data: Dic
     if debug_data is not None:
         debug_data["intent_prompt"] = f"System: {system_instruction}\nPrompt: {prompt}"
         
-    result_str = generate_text_gemini(prompt, system_instruction, is_json=True, debug_data=debug_data)
+    result_str = generate_text_gemini(prompt, system_instruction, is_json=True, response_schema=intent_schema, debug_data=debug_data)
     try:
-        return json.loads(result_str)
+        return IntentResponse.model_validate_json(result_str).model_dump()
     except Exception as e:
         logger.error(f"Failed to parse Intent Classification JSON: {e}. Raw: {result_str}")
-        return {
-            "intent": "RECORD_LOOKUP",
-            "confidence": 0.5,
-            "entities": {
-                "locations": [],
-                "crime_types": [],
-                "accused": [],
-                "time_ranges": []
-            },
-            "requires_graph": False,
-            "requires_map": False,
-            "time_range": "all time"
-        }
+        try:
+            # Fallback to loose json parsing if model_validate_json failed but JSON is valid
+            return json.loads(result_str)
+        except Exception:
+            return {
+                "intent": "RECORD_LOOKUP",
+                "confidence": 0.5,
+                "entities": {
+                    "locations": [],
+                    "crime_types": [],
+                    "accused": [],
+                    "time_ranges": []
+                },
+                "requires_graph": False,
+                "requires_map": False,
+                "time_range": "all time"
+            }
 
 def generate_nl_to_sql(query: str, role: str, session_context: Dict[str, Any], debug_data: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Translates Natural Language query into read-only SQL based on the DB schema.
     Returns JSON: {sql, explanation}
     """
+    sql_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "sql": {"type": "STRING"},
+            "explanation": {"type": "STRING"}
+        },
+        "required": ["sql", "explanation"]
+    }
+
     schema = get_cached_schema()
     system_instruction = (
         f"You are a database expert generating secure SQL queries for a crime database.\n"
@@ -295,7 +401,8 @@ def generate_nl_to_sql(query: str, role: str, session_context: Dict[str, Any], d
         '{"sql": "SELECT * FROM firs ...", "explanation": "Brief explanation of query logic"}\n'
         "7. When filtering by person names (e.g. accused or victim names) or location names, always use LIKE with wildcards (e.g. accused.name LIKE '%Rajesh%') rather than strict equality (=), to ensure partial matches are successfully returned.\n"
         "8. For queries analyzing relationships, co-accused, networks, or association graphs, you MUST select 'accused.accused_id' and 'firs.fir_id' in the SELECT clause (along with any other columns) so the graph engine can extract IDs to build the network graph.\n"
-        "9. For queries identifying crime hotspots, patterns, or mapping clusters, you MUST select location coordinates ('locations.lat', 'locations.lng') and location identifiers ('locations.name AS loc_name' or 'locations.location_id') in the SELECT clause so the pattern engine can perform spatial clustering. Also, always use the exact lowercase string literals for 'crime_type' filters ('chain_snatching', 'robbery', 'assault', 'burglary', 'vehicle_theft', 'drug_offense') since database records are strictly lowercase."
+        "9. For queries identifying crime hotspots, patterns, or mapping clusters, you MUST select location coordinates ('locations.lat', 'locations.lng') and location identifiers ('locations.name AS loc_name' or 'locations.location_id') in the SELECT clause so the pattern engine can perform spatial clustering. Also, always use the exact lowercase string literals for 'crime_type' filters ('chain_snatching', 'robbery', 'assault', 'burglary', 'vehicle_theft', 'drug_offense') since database records are strictly lowercase.\n"
+        "10. When generating queries, you MUST always include `firs.fir_number` and `firs.fir_id` in the SELECT clause if the query accesses the `firs` table, so that downstream intelligence reports, case dossiers, and graphs can cite and reference the specific case files."
     )
 
     history = session_context.get("queries", [])
@@ -310,34 +417,46 @@ def generate_nl_to_sql(query: str, role: str, session_context: Dict[str, Any], d
     if debug_data is not None:
         debug_data["sql_prompt"] = f"System: {system_instruction}\nPrompt: {prompt}"
 
-    result_str = generate_text_gemini(prompt, system_instruction, is_json=True, debug_data=debug_data)
+    result_str = generate_text_gemini(prompt, system_instruction, is_json=True, response_schema=sql_schema, debug_data=debug_data)
     try:
-        return json.loads(result_str)
+        return SqlQueryResponse.model_validate_json(result_str).model_dump()
     except Exception as e:
         logger.error(f"Failed to parse NL to SQL JSON: {e}. Raw: {result_str}")
-        return {
-            "sql": "SELECT * FROM firs LIMIT 100;",
-            "explanation": "Default fallback query due to system parser error."
-        }
+        try:
+            return json.loads(result_str)
+        except Exception:
+            return {
+                "sql": "SELECT * FROM firs LIMIT 100;",
+                "explanation": "Default fallback query due to system parser error."
+            }
 
-def summarize_results(query: str, sql_results: List[Dict[str, Any]], debug_data: Dict[str, Any] = None) -> str:
+def summarize_results(
+    query: str, 
+    sql_results: List[Dict[str, Any]], 
+    semantic_results: List[Dict[str, Any]] = None,
+    debug_data: Dict[str, Any] = None
+) -> str:
     """
-    Summarizes SQL database execution results. Cites specific FIRs using brackets, e.g. [FIR-2024-00102].
+    Summarizes SQL database execution results and semantic search matches.
+    Cites specific FIRs using brackets, e.g. [FIR-2024-00102].
     Ensures zero hallucination.
     """
     system_instruction = (
-        "You are an evidence summarizer for the Karnataka Police. Summarize the query results based strictly on the provided SQL results.\n"
+        "You are an evidence summarizer for the Karnataka Police. Summarize the query results based strictly on the provided SQL results and semantic RAG results.\n"
         "RULES:\n"
         "1. Cite the FIR number for every case in brackets, e.g., '[FIR-2024-00125]' when summarizing or claiming facts.\n"
-        "2. NEVER hallucinate. If no records are found in the SQL results, state that clearly. Do not assume or invent facts.\n"
+        "2. NEVER hallucinate. If no records are found in the results, state that clearly. Do not assume or invent facts.\n"
         "3. Keep the language objective, professional, and evidence-backed."
     )
 
     prompt = (
         f"User Query: \"{query}\"\n"
         f"SQL Results Data: {json.dumps(sql_results[:100], default=str)}\n"
-        "Generate citation-backed summary:"
     )
+    if semantic_results:
+        prompt += f"Semantic RAG Results Data: {json.dumps(semantic_results, default=str)}\n"
+        
+    prompt += "Generate citation-backed summary:"
 
     if debug_data is not None:
         debug_data["summary_prompt"] = f"System: {system_instruction}\nPrompt: {prompt}"
@@ -740,6 +859,123 @@ def parse_document_multimodal(file_bytes: bytes, filename: str, mime_type: str =
     except Exception:
         pass
 
+    doc_parse_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "error": {"type": "STRING"},
+            "detail": {"type": "STRING"},
+            "fir": {
+                "type": "OBJECT",
+                "properties": {
+                    "fir_number": {
+                        "type": "OBJECT",
+                        "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                        "required": ["value", "confidence"]
+                    },
+                    "date": {
+                        "type": "OBJECT",
+                        "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                        "required": ["value", "confidence"]
+                    },
+                    "crime_type": {
+                        "type": "OBJECT",
+                        "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                        "required": ["value", "confidence"]
+                    },
+                    "description": {
+                        "type": "OBJECT",
+                        "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                        "required": ["value", "confidence"]
+                    },
+                    "status": {
+                        "type": "OBJECT",
+                        "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                        "required": ["value", "confidence"]
+                    },
+                    "location_name": {
+                        "type": "OBJECT",
+                        "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                        "required": ["value", "confidence"]
+                    },
+                    "station_area": {
+                        "type": "OBJECT",
+                        "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                        "required": ["value", "confidence"]
+                    },
+                    "district": {
+                        "type": "OBJECT",
+                        "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                        "required": ["value", "confidence"]
+                    }
+                },
+                "required": ["fir_number", "date", "crime_type", "description", "status", "location_name", "station_area", "district"]
+            },
+            "accused": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "name": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                            "required": ["value", "confidence"]
+                        },
+                        "age": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "INTEGER"}, "confidence": {"type": "NUMBER"}},
+                            "required": ["value", "confidence"]
+                        },
+                        "gender": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                            "required": ["value", "confidence"]
+                        },
+                        "occupation": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                            "required": ["value", "confidence"]
+                        },
+                        "address": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                            "required": ["value", "confidence"]
+                        },
+                        "role": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                            "required": ["value", "confidence"]
+                        }
+                    },
+                    "required": ["name", "age", "gender", "occupation", "address", "role"]
+                }
+            },
+            "victims": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "name": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                            "required": ["value", "confidence"]
+                        },
+                        "age": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "INTEGER"}, "confidence": {"type": "NUMBER"}},
+                            "required": ["value", "confidence"]
+                        },
+                        "gender": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+                            "required": ["value", "confidence"]
+                        }
+                    },
+                    "required": ["name", "age", "gender"]
+                }
+            }
+        }
+    }
+
     import hashlib
     system_instruction = (
         "You are an expert crime records parser. Analyze the uploaded case document image and extract details to construct an FIR record.\n"
@@ -796,11 +1032,14 @@ def parse_document_multimodal(file_bytes: bytes, filename: str, mime_type: str =
         
         response = model.generate_content(
             [prompt, image_part],
-            generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
+            generation_config=genai.types.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=doc_parse_schema
+            )
         )
         
-        result_json = json.loads(response.text.strip())
-        if "error" in result_json:
+        result_json = DocumentParseResponse.model_validate_json(response.text.strip()).model_dump()
+        if result_json.get("error"):
             raise ValueError(result_json.get("detail", "Uploaded file is not a valid crime record or FIR document."))
         return result_json
     except Exception as e:
@@ -949,3 +1188,110 @@ Based on spatio-temporal clustering and Louvain community network modularity ana
 * **Geographical surveillance:** Focus police patrols on the ITPL corridor and 100ft Rd, which are identified as primary transition zones between the crime clusters.
 """
     return markdown_content
+
+
+def get_embedding(text: str) -> List[float]:
+    """Generates a 3072-dimension text embedding vector using Gemini API."""
+    global current_key_index
+    if not GEMINI_API_KEY:
+        # Simulated fallback mode: Return a deterministic mock vector based on text
+        import numpy as np
+        h = hashlib.sha256(text.encode('utf-8')).digest()
+        # Seed NumPy state locally to make it deterministic
+        state = np.random.RandomState(int.from_bytes(h[:4], byteorder='little'))
+        return state.randn(3072).tolist()
+    
+    # Try using configured API keys with rotation/retries
+    max_retries = 3
+    delay = 12.0
+    last_error = None
+    
+    for attempt in range(max_retries + 1):
+        try:
+            active_key = configure_active_key()
+            result = genai.embed_content(
+                model="models/gemini-embedding-001",
+                content=text,
+                task_type="retrieval_document"
+            )
+            return result['embedding']
+        except Exception as e:
+            last_error = e
+            is_rate_limit = "ResourceExhausted" in type(e).__name__ or "429" in str(e)
+            if is_rate_limit and len(GEMINI_API_KEYS) > 1 and attempt < max_retries:
+                logger.warning("Gemini Embedding API key exhausted. Rotating...")
+                current_key_index += 1
+                continue
+            elif is_rate_limit and attempt < max_retries:
+                import time
+                time.sleep(delay)
+                delay *= 1.5
+            else:
+                break
+                
+    logger.error(f"Gemini Embedding failed: {last_error}. Returning simulated vector.")
+    import numpy as np
+    h = hashlib.sha256(text.encode('utf-8')).digest()
+    state = np.random.RandomState(int.from_bytes(h[:4], byteorder='little'))
+    return state.randn(3072).tolist()
+
+
+def semantic_search_firs(query: str = None, db = None, limit: int = 3, query_vector: List[float] = None) -> List[Dict[str, Any]]:
+    """
+    Performs a cosine similarity search on case descriptions in the SQLite database.
+    Calculates similarity in Python using NumPy on raw binary float embeddings.
+    """
+    import numpy as np
+    from backend.models import FIR, FIREmbedding
+    
+    if query_vector is None:
+        if query is None:
+            return []
+        query_vector = get_embedding(query)
+        
+    query_vector_np = np.array(query_vector, dtype=np.float32)
+    norm_q = np.linalg.norm(query_vector_np)
+    if norm_q == 0:
+        return []
+        
+    # Fetch all embeddings from the database
+    embeddings_rows = db.query(FIREmbedding).all()
+    if not embeddings_rows:
+        return []
+        
+    results = []
+    for row in embeddings_rows:
+        try:
+            # Deserialize embedding blob back to NumPy array
+            emb_vector = np.frombuffer(row.embedding, dtype=np.float32)
+            if len(emb_vector) != 3072:
+                continue
+            norm_e = np.linalg.norm(emb_vector)
+            if norm_e == 0:
+                continue
+            # Calculate cosine similarity
+            similarity = float(np.dot(query_vector_np, emb_vector) / (norm_q * norm_e))
+            results.append((row.fir_id, similarity))
+        except Exception as e:
+            logger.error(f"Error parsing embedding for FIR {row.fir_id}: {e}")
+            continue
+            
+    # Sort by similarity descending
+    results.sort(key=lambda x: x[1], reverse=True)
+    top_matches = results[:limit]
+    
+    # Retrieve FIR records for the top matches
+    matched_firs = []
+    for fir_id, score in top_matches:
+        fir = db.query(FIR).filter(FIR.fir_id == fir_id).first()
+        if fir:
+            matched_firs.append({
+                "fir_id": fir.fir_id,
+                "fir_number": fir.fir_number,
+                "date": fir.date,
+                "crime_type": fir.crime_type,
+                "description": fir.description,
+                "score": score
+            })
+            
+    return matched_firs

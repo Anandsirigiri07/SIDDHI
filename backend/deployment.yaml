@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: siddhi-backend-deployment
+  namespace: siddhi-v2
+  labels:
+    app: siddhi-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: siddhi-backend
+  template:
+    metadata:
+      labels:
+        app: siddhi-backend
+    spec:
+      containers:
+      - name: siddhi-backend-container
+        image: siddhi-backend:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        env:
+        - name: USE_CATALYST
+          value: "true"
+        - name: USE_SMARTBROWZ
+          value: "true"
+        - name: USE_STRATUS
+          value: "true"
+        - name: USE_LOCAL_FALLBACK
+          value: "true"
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
