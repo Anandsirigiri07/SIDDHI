@@ -1,7 +1,14 @@
 import React, { useState } from 'react';
 import { api } from '../utils/api';
 import { setSession, isAuthenticated } from '../utils/auth';
-import { ShieldAlert, KeyRound, User, Loader2 } from 'lucide-react';
+import { ShieldAlert, KeyRound, User, Loader2, ChevronDown } from 'lucide-react';
+
+const DEMO_ROLES = [
+  { label: '👮 Investigator — Field Case Officer', username: 'investigator', password: 'password123', color: 'text-blue-400' },
+  { label: '📊 Analyst — Crime Pattern Analyst', username: 'analyst', password: 'password123', color: 'text-emerald-400' },
+  { label: '🏛️ Supervisor — District Supervisor', username: 'supervisor', password: 'password123', color: 'text-amber-400' },
+  { label: '🏢 Policymaker — DGP Command', username: 'policymaker', password: 'password123', color: 'text-rose-400' },
+];
 
 export const LoginPage: React.FC = () => {
   const [username, setUsername] = useState('');
@@ -98,6 +105,37 @@ export const LoginPage: React.FC = () => {
                 className="flex-1 bg-transparent px-3 text-sm text-slate-100 placeholder-slate-600 border-none outline-none focus:ring-0"
               />
             </div>
+          </div>
+
+          {/* Demo Access Dropdown for Judges */}
+          <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] font-bold text-amber-400 uppercase tracking-widest">🔍 Demo Access — For Evaluators</span>
+            </div>
+            <div className="relative">
+              <select
+                onChange={(e) => {
+                  const role = DEMO_ROLES.find(r => r.username === e.target.value);
+                  if (role) {
+                    setUsername(role.username);
+                    setPassword(role.password);
+                  }
+                }}
+                defaultValue=""
+                className="w-full bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-2 pr-8 appearance-none cursor-pointer focus:outline-none focus:border-amber-500/60 transition-colors"
+              >
+                <option value="" disabled>— Select a role to auto-fill credentials —</option>
+                {DEMO_ROLES.map((role) => (
+                  <option key={role.username} value={role.username}>
+                    {role.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none" />
+            </div>
+            <p className="mt-2 text-[9px] text-slate-500 text-center tracking-wide">
+              ⚠ These credentials are for demonstration purposes only. All data is synthetic.
+            </p>
           </div>
 
           <button
