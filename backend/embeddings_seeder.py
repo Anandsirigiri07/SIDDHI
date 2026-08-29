@@ -15,6 +15,7 @@ def seed_missing_embeddings():
     Base.metadata.create_all(bind=engine)
     
     db = SessionLocal()
+    seeded_count = 0
     try:
         # Optimize: Query all existing embedding fir_ids in one shot
         existing_ids = set(r[0] for r in db.execute(text("SELECT fir_id FROM fir_embeddings")).fetchall())
@@ -30,14 +31,14 @@ def seed_missing_embeddings():
             logger.warning(f"Large batch of missing embeddings ({len(missing_firs)}). Generating deterministic mock embeddings instantly to prevent startup hang.")
             db.execute(text("DELETE FROM fir_embeddings"))
             db.commit()
+            base_vector = np.random.randn(3072).astype(np.float32)
             for fir in missing_firs:
                 if not fir.description:
                     continue
-                h = hashlib.sha256(fir.description.encode('utf-8')).digest()
-                state = np.random.RandomState(int.from_bytes(h[:4], byteorder='little'))
-                vector = state.randn(3072).tolist()
-                arr = np.array(vector, dtype=np.float32)
-                embedding_bytes = arr.tobytes()
+                h = int(hashlib.sha256(fir.description.encode('utf-8')).hexdigest()[:8], 16)
+                # Tweak base vector slightly to generate unique, deterministic mock embedding instantly
+                vector = base_vector * (1.0 + (h % 100) / 1000.0)
+                embedding_bytes = vector.tobytes()
                 
                 db_emb = FIREmbedding(fir_id=fir.fir_id, embedding=embedding_bytes)
                 db.add(db_emb)

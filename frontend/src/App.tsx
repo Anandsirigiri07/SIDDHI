@@ -4,32 +4,25 @@ import { DashboardPage } from './pages/DashboardPage';
 import { isAuthenticated } from './utils/auth';
 
 export const App: React.FC = () => {
-  const [currentPath, setCurrentPath] = useState(window.location.pathname);
+  const [authed, setAuthed] = useState<boolean>(isAuthenticated());
 
   useEffect(() => {
-    const handleLocationChange = () => {
-      setCurrentPath(window.location.pathname);
+    const handleAuthChange = () => {
+      setAuthed(isAuthenticated());
     };
     
-    // Add popstate listener for browser back/forward buttons
-    window.addEventListener('popstate', handleLocationChange);
+    window.addEventListener('storage', handleAuthChange);
+    window.addEventListener('auth_state_change', handleAuthChange);
     return () => {
-      window.removeEventListener('popstate', handleLocationChange);
+      window.removeEventListener('storage', handleAuthChange);
+      window.removeEventListener('auth_state_change', handleAuthChange);
     };
   }, []);
 
-  // Security Gate / Route Protection
-  if (currentPath === '/login') {
+  if (!authed) {
     return <LoginPage />;
   }
 
-  if (!isAuthenticated()) {
-    // Force redirect to login page
-    window.history.pushState({}, '', '/login');
-    return <LoginPage />;
-  }
-
-  // Default route - Dashboard Workspace
   return <DashboardPage />;
 };
 

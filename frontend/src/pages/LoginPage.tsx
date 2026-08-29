@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../utils/api';
-import { setSession, isAuthenticated } from '../utils/auth';
+import { setSession } from '../utils/auth';
 import { ShieldAlert, KeyRound, User, Loader2, ChevronDown } from 'lucide-react';
 
 const DEMO_ROLES = [
@@ -11,15 +11,10 @@ const DEMO_ROLES = [
 ];
 
 export const LoginPage: React.FC = () => {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('investigator');
+  const [password, setPassword] = useState('password123');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // If already logged in, redirect to dashboard
-  if (isAuthenticated()) {
-    window.location.href = '/';
-  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,9 +27,6 @@ export const LoginPage: React.FC = () => {
       const response = await api.post('/api/auth/login', { username, password });
       const { access_token, user } = response.data;
       setSession(access_token, user);
-      
-      // Redirect to main workspace
-      window.location.href = '/';
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Authentication failed. Please verify credentials.');
     } finally {
@@ -114,14 +106,16 @@ export const LoginPage: React.FC = () => {
             </div>
             <div className="relative">
               <select
+                value={username}
                 onChange={(e) => {
                   const role = DEMO_ROLES.find(r => r.username === e.target.value);
                   if (role) {
                     setUsername(role.username);
                     setPassword(role.password);
+                  } else {
+                    setUsername(e.target.value);
                   }
                 }}
-                defaultValue=""
                 className="w-full bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-2 pr-8 appearance-none cursor-pointer focus:outline-none focus:border-amber-500/60 transition-colors"
               >
                 <option value="" disabled>— Select a role to auto-fill credentials —</option>

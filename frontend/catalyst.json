@@ -1,0 +1,8 @@
+{
+  "client": [
+    {
+      "name": "siddhi-frontend",
+      "source": "dist"
+    }
+  ]
+}

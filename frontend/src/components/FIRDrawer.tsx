@@ -12,6 +12,7 @@ interface FIRDrawerProps {
 export const FIRDrawer: React.FC<FIRDrawerProps> = ({ isOpen, onClose, firId, onAccusedClick }) => {
   const [firData, setFirData] = useState<any>(null);
   const [intelData, setIntelData] = useState<any | null>(null);
+  const [similarCases, setSimilarCases] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingIntel, setIsLoadingIntel] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,6 +21,7 @@ export const FIRDrawer: React.FC<FIRDrawerProps> = ({ isOpen, onClose, firId, on
     if (!isOpen || !firId) {
       setFirData(null);
       setIntelData(null);
+      setSimilarCases([]);
       return;
     }
 
@@ -39,8 +41,12 @@ export const FIRDrawer: React.FC<FIRDrawerProps> = ({ isOpen, onClose, firId, on
     const loadIntel = async () => {
       setIsLoadingIntel(true);
       try {
-        const res = await api.post(`/api/v2/intelligence/dossier/case/${firId}`);
-        setIntelData(res.data.structured_data);
+        const [dossierRes, simRes] = await Promise.all([
+          api.post(`/api/v2/intelligence/dossier/case/${firId}`).catch(() => ({ data: { structured_data: null } })),
+          api.get(`/api/fir/${firId}/similar`).catch(() => ({ data: { similar_cases: [] } }))
+        ]);
+        setIntelData(dossierRes.data?.structured_data);
+        setSimilarCases(simRes.data?.similar_cases || []);
       } catch (err) {
         console.error("Failed to load case priority intelligence:", err);
         setIntelData(null);
@@ -308,6 +314,51 @@ export const FIRDrawer: React.FC<FIRDrawerProps> = ({ isOpen, onClose, firId, on
                 </div>
               )}
             </div>
+
+            {/* Similar Case / Crime Intelligence (Feature 3) */}
+            {similarCases && similarCases.length > 0 && (
+              <div className="flex flex-col gap-2.5 mt-2">
+                <div className="text-xs font-bold text-cyan-400 uppercase tracking-widest border-b border-slate-800 pb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <BrainCircuit className="w-4 h-4 text-cyan-400" />
+                    Similar Case Intelligence
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">SentenceTransformers Vector Match</span>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  {similarCases.map((sim: any) => (
+                    <div
+                      key={sim.fir_id}
+                      className="p-3 bg-slate-900/40 border border-slate-800/80 hover:border-cyan-500/40 rounded-lg flex flex-col gap-1.5 transition-colors text-xs"
+                    >
+                      <div className="flex justify-between items-center">
+                        <span className="font-mono font-bold text-cyan-300">{sim.fir_number}</span>
+                        <span className="font-mono font-bold text-[10px] bg-cyan-950/60 text-cyan-400 border border-cyan-800/40 px-2 py-0.5 rounded">
+                          {sim.semantic_similarity_pct}% Similarity
+                        </span>
+                      </div>
+
+                      <div className="text-[11px] text-slate-400 font-sans">
+                        {sim.crime_type} • {sim.district} ({sim.location_name})
+                      </div>
+
+                      <div className="flex gap-2 text-[9px] mt-0.5">
+                        {sim.match_factors?.crime_type_match && (
+                          <span className="bg-emerald-950/50 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-900/30">✓ Crime Type Match</span>
+                        )}
+                        {sim.match_factors?.location_relation && (
+                          <span className="bg-blue-950/50 text-blue-400 px-1.5 py-0.5 rounded border border-blue-900/30">✓ District Relation</span>
+                        )}
+                        {sim.match_factors?.shared_accused_count > 0 && (
+                          <span className="bg-rose-950/50 text-rose-400 px-1.5 py-0.5 rounded border border-rose-900/30">✓ Shared Accomplice</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

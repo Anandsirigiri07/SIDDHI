@@ -1,7 +1,9 @@
 import axios from 'axios';
 import { getSessionToken, clearSession } from './auth';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://siddhi-api-v2-50043097496.development.catalystappsail.in';
+const API_BASE_URL = (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'))
+  ? 'http://127.0.0.1:8000'
+  : 'https://siddhi-final-50043097496.development.catalystappsail.in';
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
@@ -43,7 +45,8 @@ export interface QueryPayload {
 }
 
 export interface QueryResponse {
-  answer: string;
+  answer?: string;
+  summary?: string;
   graph: {
     nodes: any[];
     links: any[];
@@ -58,28 +61,43 @@ export interface QueryResponse {
   heatmap: {
     type: string;
     features: any[];
+    alerts?: Array<{
+      type: string;
+      message: string;
+      severity: string;
+    }>;
+    anomalies?: any[];
   };
   alerts: Array<{
     type: string;
     message: string;
     severity: string;
   }>;
-  citations: string[];
-  fir_ids: number[];
+  citations?: string[];
+  fir_ids?: number[];
   evidence: {
-    sql_executed: string;
-    explanation: string;
+    sql_executed?: string;
+    sql_used?: string;
+    explanation?: string;
+    cited_firs?: string[];
     total_rows_found?: number;
     rows_returned?: number;
   };
-  execution_mode: 'gemini' | 'fallback';
+  execution_mode: string;
   model_used?: string;
   tokens_used?: number;
   intent?: string;
   confidence?: number;
   total_rows_found: number;
   rows_returned: number;
-  debug: {
+  anomalies?: any[];
+  risk?: any;
+  similar_cases?: any[];
+  identity_matches?: any[];
+  temporal_patterns?: any[];
+  shadow_associations?: any[];
+  query_type?: string;
+  debug?: {
     intent_prompt: string;
     sql_prompt: string;
     summary_prompt: string;
@@ -234,5 +252,20 @@ export const parseDocument = async (file: File): Promise<IngestDraftResponse> =>
 
 export const confirmIngestion = async (payload: ConfirmIngestPayload): Promise<{ success: boolean; fir_id: number; fir_number: string }> => {
   const response = await api.post<{ success: boolean; fir_id: number; fir_number: string }>('/api/ingest/confirm', payload);
+  return response.data;
+};
+
+export const getAccusedAliases = async (accusedId: number) => {
+  const response = await api.get(`/api/accused/${accusedId}/aliases`);
+  return response.data;
+};
+
+export const getChronoMatrix = async (params?: { crime_type?: string; district?: string; accused_id?: number }) => {
+  const response = await api.get('/api/analytics/chrono-matrix', { params });
+  return response.data;
+};
+
+export const getAccusedShadowAssociations = async (accusedId: number) => {
+  const response = await api.get(`/api/accused/${accusedId}/shadow-associations`);
   return response.data;
 };

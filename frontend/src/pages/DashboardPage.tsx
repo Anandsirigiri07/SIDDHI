@@ -16,6 +16,7 @@ import { TimelinePlayer } from '../components/TimelinePlayer';
 import { DocumentIngestionPanel } from '../components/DocumentIngestionPanel';
 import { DossierModal } from '../components/DossierModal';
 import { RoleWidget } from '../components/RoleWidget';
+import { ChronoMatrixWidget } from '../components/ChronoMatrixWidget';
 import { ToastNotificationContainer } from '../components/ToastNotificationContainer';
 import type { ToastAlert } from '../components/ToastNotificationContainer';
 import {
@@ -37,9 +38,7 @@ type ViewMode = 'workspace' | 'audit' | 'ingest' | 'district' | 'executive';
 
 export const DashboardPage: React.FC = () => {
   const user = getSessionUser();
-  
   if (!user) {
-    window.location.href = '/login';
     return null;
   }
 
@@ -118,6 +117,12 @@ export const DashboardPage: React.FC = () => {
   const [selectedFirId, setSelectedFirId] = useState<number | null>(null);
   const [isAccusedDrawerOpen, setIsAccusedDrawerOpen] = useState(false);
   const [isFirDrawerOpen, setIsFirDrawerOpen] = useState(false);
+  
+  // Shared Cross-Panel Selection State (Feature 5)
+  const [selectedEntity, setSelectedEntity] = useState<{ type: string; id: string | number; source: string } | null>(null);
+
+  // Opt-in Shadow Syndicate Associations state (Feature 3 per Rule #4/7)
+  const [showShadowLinks, setShowShadowLinks] = useState(false);
 
   // Supervisor Audit state
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
@@ -193,45 +198,58 @@ export const DashboardPage: React.FC = () => {
   // MEMOIZED calculations to prevent redundant re-renders
   const filteredGraph = useMemo(() => {
     if (!queryResult || !queryResult.graph) return null;
-    if (allDates.length === 0 || !playbackDate) return queryResult.graph;
+    const nodes = Array.isArray(queryResult.graph.nodes) ? queryResult.graph.nodes : [];
+    const links = Array.isArray(queryResult.graph.links) ? queryResult.graph.links : [];
+
+    if (allDates.length === 0 || !playbackDate) {
+      return {
+        ...queryResult.graph,
+        nodes,
+        links
+      };
+    }
 
     const maxAllowedDate = playbackDate;
     const validFirIds = new Set<string>();
     
-    const filteredNodes = queryResult.graph.nodes.filter((node) => {
-      if (node.type === 'FIR') {
+    const filteredNodes = nodes.filter((node) => {
+      if (node && node.type === 'FIR') {
         if (node.date && node.date > maxAllowedDate) {
           return false;
         }
-        validFirIds.add(node.id);
+        if (node.id) validFirIds.add(node.id.toString());
         return true;
       }
       return true;
     });
 
-    const filteredLinks = queryResult.graph.links.filter((link) => {
-      const sourceId = typeof link.source === 'object' ? (link.source as any).id : link.source;
-      const targetId = typeof link.target === 'object' ? (link.target as any).id : link.target;
+    const filteredLinks = links.filter((link) => {
+      if (!link) return false;
+      const sourceId = (typeof link.source === 'object' ? (link.source as any).id : link.source) || '';
+      const targetId = (typeof link.target === 'object' ? (link.target as any).id : link.target) || '';
       
-      const sourceIsFir = sourceId.startsWith('fir-');
-      const targetIsFir = targetId.startsWith('fir-');
+      const sStr = sourceId.toString();
+      const tStr = targetId.toString();
       
-      if (sourceIsFir && !validFirIds.has(sourceId)) return false;
-      if (targetIsFir && !validFirIds.has(targetIsFir)) return false;
+      const sourceIsFir = sStr.startsWith('fir-');
+      const targetIsFir = tStr.startsWith('fir-');
+      
+      if (sourceIsFir && !validFirIds.has(sStr)) return false;
+      if (targetIsFir && !validFirIds.has(tStr)) return false;
       return true;
     });
 
     const activeNodeIds = new Set<string>();
     filteredLinks.forEach((l) => {
-      const sourceId = typeof l.source === 'object' ? (l.source as any).id : l.source;
-      const targetId = typeof l.target === 'object' ? (l.target as any).id : l.target;
+      const sourceId = ((typeof l.source === 'object' ? (l.source as any).id : l.source) || '').toString();
+      const targetId = ((typeof l.target === 'object' ? (l.target as any).id : l.target) || '').toString();
       activeNodeIds.add(sourceId);
       activeNodeIds.add(targetId);
     });
 
     const prunedNodes = filteredNodes.filter((node) => {
-      if (node.type === 'Location' || node.type === 'Victim') {
-        return activeNodeIds.has(node.id);
+      if (node && (node.type === 'Location' || node.type === 'Victim')) {
+        return activeNodeIds.has((node.id || '').toString());
       }
       return true;
     });
@@ -245,13 +263,21 @@ export const DashboardPage: React.FC = () => {
 
   const filteredHeatmap = useMemo(() => {
     if (!queryResult || !queryResult.heatmap) return null;
-    if (allDates.length === 0 || !playbackDate) return queryResult.heatmap;
+    const features = Array.isArray(queryResult.heatmap.features) ? queryResult.heatmap.features : [];
+
+    if (allDates.length === 0 || !playbackDate) {
+      return {
+        ...queryResult.heatmap,
+        features
+      };
+    }
 
     const maxAllowedDate = playbackDate;
 
-    const filteredFeatures = queryResult.heatmap.features.map((feat) => {
-      const originalDates = feat.properties.dates || [];
-      const originalFirIds = feat.properties.fir_ids || [];
+    const filteredFeatures = features.map((feat) => {
+      if (!feat || !feat.properties) return null;
+      const originalDates = Array.isArray(feat.properties.dates) ? feat.properties.dates : [];
+      const originalFirIds = Array.isArray(feat.properties.fir_ids) ? feat.properties.fir_ids : [];
       
       const validIncidents = originalDates
         .map((d: string, idx: number) => ({ date: d, firId: originalFirIds[idx] }))
@@ -262,8 +288,10 @@ export const DashboardPage: React.FC = () => {
       const newFirIds = validIncidents.map((inc: any) => inc.firId);
       const newCrimeCount = validIncidents.length;
       
-      const ratio = newCrimeCount / originalDates.length;
-      const newRiskScore = Math.round(feat.properties.risk_score * ratio * 100) / 100;
+      const origLen = originalDates.length || 1;
+      const ratio = newCrimeCount / origLen;
+      const origRisk = feat.properties.risk_score || 50;
+      const newRiskScore = Math.round(origRisk * ratio * 100) / 100;
 
       return {
         ...feat,
@@ -302,8 +330,9 @@ export const DashboardPage: React.FC = () => {
     if (typeof firNumberOrId === 'string') {
       if (queryResult) {
         const node = queryResult.graph.nodes.find((n) => n.label === firNumberOrId);
-        if (node) {
-          numericId = parseInt(node.id.split('-')[1], 10);
+        if (node && node.id) {
+          const parts = node.id.toString().split('-');
+          numericId = parseInt(parts[1] || '0', 10);
         }
       }
     } else {
@@ -424,8 +453,10 @@ export const DashboardPage: React.FC = () => {
   // dynamic environment-driven dynamic Websocket setup
   useEffect(() => {
     const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Use VITE_WS_URL env variable if configured, otherwise calculate dynamically
-    const wsHost = import.meta.env.VITE_WS_URL || 'localhost:8000';
+    const wsHost = import.meta.env.VITE_WS_URL || 
+      (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+        ? 'localhost:8000'
+        : 'siddhi-api-v2-50043097496.development.catalystappsail.in');
     const wsUrl = `${wsScheme}//${wsHost}/api/ws/alerts`;
     
     let ws: WebSocket;
@@ -516,15 +547,18 @@ export const DashboardPage: React.FC = () => {
 
       setQueryResult(result);
       
+      const textResponse = result.summary || result.answer || (typeof result === 'string' ? result : 'Query executed successfully.');
+      const citedFirs = result.evidence?.cited_firs || result.citations || [];
+
       setChatMessages((prev) => [
         ...prev,
         {
           sender: 'ai',
-          text: result.answer,
+          text: textResponse,
           intent: result.intent || 'RECORD_LOOKUP',
           confidence: result.confidence !== undefined ? result.confidence : 0.9,
-          citations: result.citations,
-          executionMode: result.execution_mode,
+          citations: citedFirs,
+          executionMode: result.execution_mode || 'DIRECT-AI',
         },
       ]);
     } catch (err: any) {
@@ -541,7 +575,6 @@ export const DashboardPage: React.FC = () => {
 
   const handleLogout = () => {
     clearSession();
-    window.location.href = '/login';
   };
 
   const handleExportPDF = async () => {
@@ -551,13 +584,13 @@ export const DashboardPage: React.FC = () => {
     try {
       await exportIntelligenceReport({
         query: activeQuery,
-        answer: queryResult.answer,
-        citations: queryResult.citations,
-        executionMode: queryResult.execution_mode,
-        totalRows: queryResult.total_rows_found,
-        sqlExecuted: queryResult.evidence.sql_executed,
-        explanation: queryResult.evidence.explanation,
-        alerts: queryResult.alerts,
+        answer: queryResult.summary || queryResult.answer || '',
+        citations: queryResult.evidence?.cited_firs || queryResult.citations || [],
+        executionMode: queryResult.execution_mode || 'DIRECT-AI',
+        totalRows: queryResult.total_rows_found || 0,
+        sqlExecuted: queryResult.evidence?.sql_used || queryResult.evidence?.sql_executed || '',
+        explanation: queryResult.evidence?.explanation || '',
+        alerts: queryResult.heatmap?.alerts || queryResult.alerts || [],
         graphElementId: 'siddhi-d3-graph',
         mapElementId: 'siddhi-leaflet-map',
         userRole: user.role,
@@ -721,13 +754,16 @@ export const DashboardPage: React.FC = () => {
             /* --- WORKSPACE MODE --- */
             <div className="flex flex-col h-full min-w-0 font-sans">
               {/* Row 1: Alert Panel */}
-              <AlertPanel alerts={queryResult ? queryResult.alerts : []} />
+              <AlertPanel alerts={queryResult ? (queryResult.alerts || queryResult.heatmap?.alerts || []) : []} />
 
               {/* Row 2: Query Entry Bar */}
               <QueryBar onAsk={handleAsk} isLoading={isLoading} />
 
               {/* Role-specific widget */}
               <RoleWidget role={user.role} onFIRClick={handleFIRClick} onAsk={handleAsk} />
+
+              {/* Feature 2: Spatiotemporal MO Chrono-Matrix Widget */}
+              <ChronoMatrixWidget districtFilter={selectedDistrict} />
 
               {/* Responsive Tabs (Hidden on Large screens) */}
               <div className="lg:hidden flex items-center justify-between border-b border-slate-900 bg-slate-950/40 p-1 mb-4 rounded-lg">
@@ -773,16 +809,26 @@ export const DashboardPage: React.FC = () => {
                 <div className="min-w-0">
                   <GraphPanel
                     graphData={filteredGraph}
-                    onAccusedClick={handleAccusedClick}
-                    onFIRClick={handleFIRClick}
+                    onAccusedClick={(aid) => {
+                      setSelectedEntity({ type: 'accused', id: aid, source: 'graph' });
+                      handleAccusedClick(aid);
+                    }}
+                    onFIRClick={(fid) => {
+                      setSelectedEntity({ type: 'fir', id: fid, source: 'graph' });
+                      handleFIRClick(fid);
+                    }}
+                    showShadowLinks={showShadowLinks}
+                    onToggleShadowLinks={() => setShowShadowLinks((v) => !v)}
                   />
                 </div>
 
                 {/* Column 3: Map Panel */}
                 <div className="min-w-0">
                   <MapPanel
-                    heatmapData={filteredHeatmap}
+                    heatmapData={filteredHeatmap ? { ...filteredHeatmap, anomalies: queryResult?.anomalies } : (queryResult?.anomalies ? { anomalies: queryResult.anomalies } : null)}
                     onHotspotClick={handleAsk}
+                    selectedEntity={selectedEntity}
+                    onSelectEntity={setSelectedEntity}
                   />
                 </div>
               </div>
@@ -802,14 +848,22 @@ export const DashboardPage: React.FC = () => {
                 {activeLensTab === 'graph' && (
                   <GraphPanel
                     graphData={filteredGraph}
-                    onAccusedClick={handleAccusedClick}
-                    onFIRClick={handleFIRClick}
+                    onAccusedClick={(aid) => {
+                      setSelectedEntity({ type: 'accused', id: aid, source: 'graph' });
+                      handleAccusedClick(aid);
+                    }}
+                    onFIRClick={(fid) => {
+                      setSelectedEntity({ type: 'fir', id: fid, source: 'graph' });
+                      handleFIRClick(fid);
+                    }}
                   />
                 )}
                 {activeLensTab === 'map' && (
                   <MapPanel
-                    heatmapData={filteredHeatmap}
+                    heatmapData={filteredHeatmap ? { ...filteredHeatmap, anomalies: queryResult?.anomalies } : (queryResult?.anomalies ? { anomalies: queryResult.anomalies } : null)}
                     onHotspotClick={handleAsk}
+                    selectedEntity={selectedEntity}
+                    onSelectEntity={setSelectedEntity}
                   />
                 )}
               </div>
@@ -874,7 +928,7 @@ export const DashboardPage: React.FC = () => {
                       {auditLogs.map((log) => (
                         <tr key={log.log_id} className="hover:bg-slate-900/20 transition-colors">
                           <td className="p-3 text-slate-500 font-mono text-center truncate max-w-[80px]">
-                            {log.timestamp.split(' ')[1] || log.timestamp}
+                            {(log.timestamp || '').toString().split(' ')[1] || log.timestamp || 'Just now'}
                           </td>
                           <td className="p-3">
                             <div className="font-semibold text-slate-300">{log.username}</div>
@@ -896,7 +950,7 @@ export const DashboardPage: React.FC = () => {
                             </div>
                           </td>
                           <td className="p-3 font-mono text-slate-300 font-semibold">
-                            {log.execution_time.toFixed(3)}s
+                            {typeof log.execution_time === 'number' ? log.execution_time.toFixed(3) : '0.000'}s
                           </td>
                           <td className="p-3 text-center font-bold text-slate-400">
                             {log.rows_returned}

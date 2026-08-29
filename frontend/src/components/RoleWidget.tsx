@@ -112,7 +112,7 @@ export const RoleWidget: React.FC<RoleWidgetProps> = ({
           </div>
           <div className="bg-slate-950/50 p-2.5 rounded-lg border border-slate-900/60">
             <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Max Suspect Risk Score</p>
-            <p className="text-lg font-black text-rose-400">106.5</p>
+            <p className="text-lg font-black text-rose-400">98 / 100</p>
           </div>
           <div className="bg-slate-950/50 p-2.5 rounded-lg border border-slate-900/60">
             <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Target Accused Hub</p>

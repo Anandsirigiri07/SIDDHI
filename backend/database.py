@@ -4,7 +4,12 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 db_dir = os.path.dirname(os.path.abspath(__file__))
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{os.path.join(db_dir, 'siddhi.db')}")
+parent_dir = os.path.dirname(db_dir)
+target_db = os.path.join(db_dir, 'siddhi.db')
+if not os.path.exists(target_db) and os.path.exists(os.path.join(parent_dir, 'siddhi.db')):
+    target_db = os.path.join(parent_dir, 'siddhi.db')
+
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{target_db}")
 
 connect_args = {}
 # For SQLite, disable cross-thread access check to prevent issues in multi-threaded FastAPI

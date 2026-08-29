@@ -18,24 +18,32 @@ export const ProfileDrawer: React.FC<ProfileDrawerProps> = ({
   onFIRClick,
 }) => {
   const [intelData, setIntelData] = useState<any | null>(null);
+  const [riskData, setRiskData] = useState<any | null>(null);
+  const [aliasData, setAliasData] = useState<any | null>(null);
+  const [selectedAliasCompare, setSelectedAliasCompare] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
   useEffect(() => {
     if (isOpen && accusedId) {
       setIsLoading(true);
-      api.post(`/api/v2/intelligence/dossier/suspect/${accusedId}`)
-        .then((res) => {
-          setIntelData(res.data.structured_data);
-        })
-        .catch((err) => {
-          console.error("Failed to fetch suspect intelligence dossier:", err);
-          setIntelData(null);
+      Promise.all([
+        api.post(`/api/v2/intelligence/dossier/suspect/${accusedId}`).catch(() => ({ data: { structured_data: null } })),
+        api.get(`/api/accused/${accusedId}/risk`).catch(() => ({ data: null })),
+        api.get(`/api/accused/${accusedId}/aliases`).catch(() => ({ data: null }))
+      ])
+        .then(([dossierRes, riskRes, aliasRes]) => {
+          setIntelData(dossierRes.data?.structured_data);
+          setRiskData(riskRes.data);
+          setAliasData(aliasRes.data);
         })
         .finally(() => {
           setIsLoading(false);
         });
     } else {
       setIntelData(null);
+      setRiskData(null);
+      setAliasData(null);
+      setSelectedAliasCompare(null);
     }
   }, [isOpen, accusedId]);
 
@@ -158,6 +166,48 @@ export const ProfileDrawer: React.FC<ProfileDrawerProps> = ({
           </div>
         </div>
 
+        {/* Explainable Intelligence Risk Score (Feature 1) */}
+        {riskData && (
+          <div className="bg-slate-900/40 border border-slate-800 p-4 rounded-lg flex flex-col gap-3">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+              <div className="text-xs font-bold text-cyan-400 uppercase tracking-widest flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5" />
+                Explainable Risk Engine
+              </div>
+              <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded ${
+                riskData.risk_level === 'HIGH RISK' ? 'bg-rose-950/60 text-rose-400 border border-rose-800/40' :
+                riskData.risk_level === 'MODERATE RISK' ? 'bg-amber-950/60 text-amber-400 border border-amber-800/40' :
+                'bg-emerald-950/60 text-emerald-400 border border-emerald-800/40'
+              }`}>
+                {riskData.risk_score} / 100 ({riskData.risk_level})
+              </span>
+            </div>
+
+            <div className="text-xs text-slate-300 italic bg-slate-950/60 p-2.5 rounded border border-slate-800/80 leading-relaxed font-sans">
+              "{riskData.explanation}"
+            </div>
+
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mt-1">Why this score? (Contributing Factors):</div>
+            
+            <div className="flex flex-col gap-2">
+              {(riskData.risk_factors || []).map((factor: any, idx: number) => (
+                <div key={idx} className="flex flex-col gap-1 text-[11px] bg-slate-950/40 p-2 rounded border border-slate-900">
+                  <div className="flex justify-between items-center">
+                    <span className="font-semibold text-slate-300">{factor.name}</span>
+                    <span className="font-mono font-bold text-amber-400">+{factor.points} pts <span className="text-slate-500 font-normal">({factor.raw_value})</span></span>
+                  </div>
+                  <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className="bg-cyan-500 h-full rounded-full" 
+                      style={{ width: `${(factor.points / factor.weight_pct) * 100}%` }} 
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {isLoading ? (
           <div className="py-8 flex flex-col items-center justify-center text-slate-500 gap-2">
             <Activity className="w-6 h-6 animate-pulse text-cyan-500" />
@@ -266,6 +316,111 @@ export const ProfileDrawer: React.FC<ProfileDrawerProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Feature 1: AI Suspect Alias & Identity Resolver per Mandatory Rule #1, #4, #5 */}
+        <div className="flex flex-col gap-2">
+          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest border-b border-slate-800 pb-1 flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <User className="w-3.5 h-3.5 text-purple-400" />
+              Potential Identity Matches (Alias Resolver)
+            </div>
+            <span className="text-[9px] text-purple-400 font-mono">Rule #4/5 Calibrated</span>
+          </div>
+
+          {aliasData && aliasData.candidates && aliasData.candidates.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              {aliasData.candidates.map((cand: any) => {
+                let badgeColor = "bg-slate-800 text-slate-300 border-slate-700";
+                if (cand.match_level === "HIGH MATCH") badgeColor = "bg-rose-950/80 text-rose-300 border-rose-800";
+                else if (cand.match_level === "MODERATE MATCH") badgeColor = "bg-purple-950/80 text-purple-300 border-purple-800";
+                else badgeColor = "bg-slate-900 text-amber-400 border-amber-900/50";
+
+                return (
+                  <div key={cand.candidate_id} className="p-3 bg-slate-950/60 border border-purple-900/40 rounded-xl flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex flex-col">
+                        <span className="text-xs font-bold text-slate-200">{cand.candidate_name}</span>
+                        <span className="text-[10px] text-slate-500">{cand.candidate_occupation || 'Suspect'} | Age {cand.candidate_age || 'N/A'}</span>
+                      </div>
+                      <div className="flex flex-col items-end">
+                        <span className="text-xs font-black text-purple-400 font-mono">
+                          Identity Match Score: {cand.match_score}/100
+                        </span>
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${badgeColor}`}>
+                          {cand.match_level}
+                        </span>
+                      </div>
+                    </div>
+
+                    <p className="text-[10px] text-slate-400 leading-relaxed italic border-t border-slate-900 pt-1">
+                      {cand.explanation}
+                    </p>
+
+                    <button
+                      onClick={() => setSelectedAliasCompare(cand)}
+                      className="mt-1 w-full bg-purple-950/40 hover:bg-purple-900/50 border border-purple-800/60 text-purple-300 font-bold py-1 px-2 rounded cursor-pointer text-center text-[10px] uppercase tracking-wider transition-colors"
+                    >
+                      Compare Profiles
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="p-3 bg-slate-950/40 border border-slate-900 rounded-lg text-center text-[11px] text-slate-500 italic">
+              No potential identity matches detected across records.
+            </div>
+          )}
+        </div>
+
+        {/* Compare Profiles Modal per Mandatory Rule #1 */}
+        {selectedAliasCompare && (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[1300] flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-purple-900/60 rounded-xl p-5 max-w-md w-full shadow-2xl flex flex-col gap-4 font-sans text-slate-200">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <div className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-purple-400" />
+                  <h4 className="text-sm font-bold uppercase tracking-wider text-purple-300">
+                    Investigative Profile Comparison
+                  </h4>
+                </div>
+                <button
+                  onClick={() => setSelectedAliasCompare(null)}
+                  className="text-slate-400 hover:text-slate-200 p-1"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 flex flex-col gap-1">
+                  <span className="text-[9px] font-bold text-cyan-400 uppercase tracking-wider">Primary Record</span>
+                  <span className="font-bold text-slate-100">{accusedNode.label}</span>
+                  <span className="text-[10px] text-slate-400">Risk Score: {accusedNode.risk_score}</span>
+                </div>
+                <div className="bg-slate-950 p-3 rounded-lg border border-purple-900/50 flex flex-col gap-1">
+                  <span className="text-[9px] font-bold text-purple-400 uppercase tracking-wider">Candidate Match</span>
+                  <span className="font-bold text-slate-100">{selectedAliasCompare.candidate_name}</span>
+                  <span className="text-[10px] text-slate-400">Risk Score: {selectedAliasCompare.candidate_risk_score}</span>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Signals Breakdown:</span>
+                {selectedAliasCompare.signals?.map((sig: any, idx: number) => (
+                  <div key={idx} className="flex justify-between items-center text-[10px] bg-slate-950/60 p-2 rounded border border-slate-900">
+                    <span className="text-slate-300">{sig.name}</span>
+                    <span className="font-mono text-purple-300 font-bold">+{sig.points} / {sig.max_points} pts</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="p-2.5 bg-amber-950/20 border border-amber-900/40 rounded text-[10px] text-amber-300 italic">
+                Notice: The system provides identity match scores for investigative lead analysis and does NOT automatically merge records.
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Connected Cases */}
         <div className="flex flex-col gap-2">

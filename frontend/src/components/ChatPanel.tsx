@@ -45,7 +45,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ messages, isLoading, onFIR
     window.speechSynthesis.cancel();
 
     // Clean text: strip markdown characters and citations like [FIR-2025-00129]
-    const cleanText = text
+    const cleanText = (text || '')
       .replace(/\[FIR-\d{4}-\w+\]/g, '') // remove citations
       .replace(/[*#_`\-]/g, '') // remove markdown structures
       .trim();
@@ -77,7 +77,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ messages, isLoading, onFIR
   };
 
   const processMarkdown = (text: string) => {
-    // Map [FIR-2025-09901] to [FIR-2025-09901](fir://2025-09901)
+    if (!text) return '';
     return text.replace(/\[(FIR-(\d{4})-([A-Za-z0-9]+))\]/g, '[$1](fir://$2-$3)');
   };
 

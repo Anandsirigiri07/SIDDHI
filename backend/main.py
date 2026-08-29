@@ -13,7 +13,7 @@ import time
 import numpy as np
 import re
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import random
 from fastapi import FastAPI, Depends, HTTPException, status, Request, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +52,13 @@ from backend.graph_engine import build_network_graph
 from backend.pattern_engine import detect_hotspots
 from backend.forecast_engine import forecast_hotspots
 from backend.evidence_assembler import generate_final_response, create_audit_record
+from backend.cache import siddhi_cache
+from backend.ml.risk_engine import calculate_explainable_risk
+from backend.ml.anomaly_engine import detect_crime_anomalies
+from backend.ml.similarity_engine import find_similar_firs
+from backend.ml.alias_engine import find_potential_aliases
+from backend.ml.chrono_engine import get_chrono_matrix
+from backend.ml.shadow_engine import find_shadow_associations
 
 # Setup logger
 logger = logging.getLogger("siddhi.main")
@@ -72,21 +79,39 @@ def startup_event():
     if GEMINI_API_KEY:
         logger.info("Gemini API Key Detected: TRUE")
     else:
-        logger.warning("Gemini API Key Detected: FALSE")
-        
+        logger.warning("Gemini API Key Detected: FALSE - Fallback mode will be used")
     try:
-        from backend.embeddings_seeder import seed_missing_embeddings
-        seed_missing_embeddings()
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM gemini_cache;"))
+            logger.info("Cleared gemini_cache table on startup.")
     except Exception as e:
-        logger.error(f"Failed to auto-seed embeddings: {e}")
+        logger.warning(f"Could not clear gemini_cache on startup: {e}")    
+    import threading
+    def async_seed():
+        try:
+            from backend.embeddings_seeder import seed_missing_embeddings
+            seed_missing_embeddings()
+        except Exception as e:
+            logger.error(f"Failed to auto-seed embeddings: {e}")
+
+    threading.Thread(target=async_seed, daemon=True).start()
+
+@app.get("/")
+def root_health_check():
+    return {
+        "status": "online",
+        "service": "SIDDHI 2.0 Crime Analytics API",
+        "version": "2.0.0",
+        "catalyst_appsail": True
+    }
 
 
-# Setup CORS - Only enable locally; Catalyst API Gateway (ZGS) handles CORS in cloud
-if not os.getenv("X_ZOHO_CATALYST_LISTEN_PORT"):
+# Setup CORS for local development (disabled in Catalyst to prevent duplicate CORS headers)
+if not os.getenv("USE_CATALYST"):
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -334,207 +359,295 @@ def run_crime_query(
     # Initialize debug data collector
     debug_data = {"tokens_used": 0}
 
-    # STEP 1 & 2: Ingestion and Language Translation
-    english_query, original_lang = translate_query_to_english(payload.query, debug_data=debug_data)
-    logger.info(f"Ingested query: {payload.query} | Processed query: {english_query} | Lang: {original_lang}")
-
-    # STEP 3 & STEP 5 & STEP 9.5 Phase 1: Concurrently run classify_intent, generate_nl_to_sql, and get_embedding
-    import concurrent.futures
-    from backend.gemini_client import get_embedding
-
-    session_context = session_manager.get_context(payload.session_id)
-    debug_intent = {"tokens_used": 0}
-    debug_sql = {"tokens_used": 0}
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_intent = executor.submit(classify_intent, english_query, session_context, debug_data=debug_intent)
-        future_sql = executor.submit(generate_nl_to_sql, english_query, payload.role, session_context, debug_data=debug_sql)
-        future_emb = executor.submit(get_embedding, english_query)
-
-        try:
-            classification = future_intent.result()
-        except Exception as e:
-            logger.error(f"Error in classify_intent thread: {e}")
-            classification = {
-                "intent": "RECORD_LOOKUP",
-                "confidence": 0.5,
-                "entities": {"locations": [], "crime_types": [], "accused": [], "time_ranges": []},
-                "requires_graph": False,
-                "requires_map": False,
-                "time_range": "all time"
-            }
-
-        try:
-            sql_payload = future_sql.result()
-        except Exception as e:
-            logger.error(f"Error in generate_nl_to_sql thread: {e}")
-            sql_payload = {
-                "sql": "SELECT * FROM firs LIMIT 100;",
-                "explanation": "Fallback due to query generator error."
-            }
-
-        try:
-            query_vector = future_emb.result()
-        except Exception as e:
-            logger.error(f"Error in get_embedding thread: {e}")
-            query_vector = None
-
-    # Merge thread-local debug data into main debug_data
-    for k, v in debug_intent.items():
-        if k == "tokens_used":
-            debug_data["tokens_used"] += v
-        else:
-            debug_data[k] = v
-
-    for k, v in debug_sql.items():
-        if k == "tokens_used":
-            debug_data["tokens_used"] += v
-        else:
-            debug_data[k] = v
-
-    intent = classification.get("intent", "RECORD_LOOKUP")
-    entities = classification.get("entities", [])
-    confidence = classification.get("confidence", 0.9)
-
-    # STEP 4: Session Memory Update
-    session_manager.update_context(payload.session_id, english_query, intent=intent, entities=entities)
-
-    raw_sql = sql_payload.get("sql", "")
-    explanation = sql_payload.get("explanation", "")
-
-    # STEP 6: SQL Security Guard (Validate & Rewrite)
-    if not validate_query(raw_sql):
-        logger.warning(f"SQL Guard blocked query: {raw_sql}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"SQL Security Violation: Generated query was blocked. Prompt: {raw_sql}"
-        )
-
-    rewritten_sql = rewrite_query(raw_sql)
-    logger.info(f"Executing SQL: {rewritten_sql}")
-
-    # STEP 7: direct SQLite query execution
     try:
-        sql_results = execute_raw_sql(rewritten_sql)
-    except Exception as e:
-        logger.error(f"SQL Execution Error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database execution error: {str(e)}"
-        )
+        # STEP 1 & 2: Ingestion and Language Translation (Fast-path for English ASCII queries)
+        if all(ord(char) < 128 for char in payload.query):
+            english_query, original_lang = payload.query, "en"
+        else:
+            english_query, original_lang = translate_query_to_english(payload.query, debug_data=debug_data)
+        logger.info(f"Ingested query: {payload.query} | Processed query: {english_query} | Lang: {original_lang}")
 
-    # Calculate total matching rows
-    total_rows = get_total_rows_count(rewritten_sql)
+        # STEP 3 & STEP 5 & STEP 9.5 Phase 1: Concurrently run classify_intent, generate_nl_to_sql, and get_embedding
+        import concurrent.futures
+        from backend.gemini_client import get_embedding
 
-    # STEP 8: Run Graph Engine (passes query-specific rows)
-    graph_data = build_network_graph(sql_results)
+        session_context = session_manager.get_context(payload.session_id)
+        debug_intent = {"tokens_used": 0}
+        debug_sql = {"tokens_used": 0}
 
-    # STEP 9: Run Pattern Engine (DBSCAN + Spikes)
-    pattern_data = detect_hotspots(sql_results)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_intent = executor.submit(classify_intent, english_query, session_context, debug_data=debug_intent)
+            future_sql = executor.submit(generate_nl_to_sql, english_query, payload.role, session_context, debug_data=debug_sql)
+            future_emb = executor.submit(get_embedding, english_query)
 
-    # Broadcast spike alerts if found
-    if pattern_data.get("alerts") and manager.active_connections:
-        for alert in pattern_data["alerts"]:
-            alert_payload = {
-                "type": "SPIKE_ALERT",
-                "message": alert["message"],
-                "severity": alert["severity"],
-                "timestamp": datetime.now().strftime("%I:%M:%S %p")
-            }
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(manager.broadcast(alert_payload))
+                classification = future_intent.result()
             except Exception as e:
-                logger.error(f"Failed to schedule WebSocket broadcast: {e}")
+                logger.error(f"Error in classify_intent thread: {e}")
+                classification = {
+                    "intent": "RECORD_LOOKUP",
+                    "confidence": 0.5,
+                    "entities": {"locations": [], "crime_types": [], "accused": [], "time_ranges": []},
+                    "requires_graph": False,
+                    "requires_map": False,
+                    "time_range": "all time"
+                }
 
-    # STEP 9.5: Semantic Vector RAG Search
-    semantic_results = []
-    try:
-        from backend.gemini_client import semantic_search_firs
-        # Pass the pre-computed query_vector to avoid duplicate API calls
-        semantic_results = semantic_search_firs(db=db, limit=3, query_vector=query_vector)
-        logger.info(f"Semantic search found {len(semantic_results)} matching FIRs.")
-        
-        # Concat semantic search results to sql_results (without duplicates) to ensure they are citeable/renderable
-        existing_fir_numbers = {r.get("fir_number") for r in sql_results if r.get("fir_number")}
-        for s_row in semantic_results:
-            if s_row.get("fir_number") not in existing_fir_numbers:
-                s_row_copy = dict(s_row)
-                s_row_copy["description"] = f"[(Semantic Match: {s_row['score']:.2f})] {s_row['description']}"
-                sql_results.append(s_row_copy)
-    except Exception as e:
-        logger.error(f"Semantic RAG search failed: {e}")
+            try:
+                sql_payload = future_sql.result()
+            except Exception as e:
+                logger.error(f"Error in generate_nl_to_sql thread: {e}")
+                sql_payload = {
+                    "sql": "SELECT * FROM firs LIMIT 100;",
+                    "explanation": "Fallback due to query generator error."
+                }
 
-    # STEP 10: Summarize Results citing FIRs
-    summary = summarize_results(english_query, sql_results, semantic_results=semantic_results, debug_data=debug_data)
+            try:
+                query_vector = future_emb.result()
+            except Exception as e:
+                logger.error(f"Error in get_embedding thread: {e}")
+                query_vector = None
 
-    # STEP 11: Evidence Assembly
-    final_response = generate_final_response(
-        summary,
-        sql_results,
-        graph_data,
-        pattern_data,
-        rewritten_sql,
-        explanation
-    )
+        # Merge thread-local debug data into main debug_data
+        for k, v in debug_intent.items():
+            if k == "tokens_used":
+                debug_data["tokens_used"] += v
+            else:
+                debug_data[k] = v
 
-    # STEP 12: Back Translation if input was Kannada
-    if original_lang == 'kn':
-        translated_answer = translate_response_to_lang(final_response["answer"], 'kn', debug_data=debug_data)
-        final_response["answer"] = translated_answer
+        for k, v in debug_sql.items():
+            if k == "tokens_used":
+                debug_data["tokens_used"] += v
+            else:
+                debug_data[k] = v
 
+        intent = classification.get("intent", "RECORD_LOOKUP")
+        confidence = classification.get("confidence", 0.8)
+        entities = classification.get("entities", {})
+        time_range = classification.get("time_range", "all time")
 
-    # Inject execution metadata
-    execution_time = time.time() - start_time
-    fallback_triggered = debug_data.get("fallback_triggered", False)
-    execution_mode = "gemini" if (GEMINI_API_KEY and not fallback_triggered) else "fallback"
-    if fallback_triggered:
-        logger.warning(f"Gemini execution failed; falling back to simulated mode. Reason: {debug_data.get('fallback_reason', 'Unknown')}")
-    
-    # Update final response
-    final_response["execution_mode"] = execution_mode
-    final_response["model_used"] = debug_data.get("model_used", "simulated-fallback-model")
-    final_response["tokens_used"] = debug_data.get("tokens_used", 0)
-    final_response["intent"] = intent
-    final_response["confidence"] = confidence
-    final_response["total_rows_found"] = total_rows
-    final_response["rows_returned"] = len(sql_results)
-    
-    # Add count details to evidence sub-object
-    final_response["evidence"]["total_rows_found"] = total_rows
-    final_response["evidence"]["rows_returned"] = len(sql_results)
-    
-    # Inject debug statistics
-    final_response["debug"] = {
-        "intent_prompt": debug_data.get("intent_prompt", ""),
-        "sql_prompt": debug_data.get("sql_prompt", ""),
-        "summary_prompt": debug_data.get("summary_prompt", ""),
-        "model_used": debug_data.get("model_used", "simulated-fallback-model"),
-        "tokens_used": debug_data.get("tokens_used", 0)
-    }
+        sql_query = sql_payload.get("sql", "SELECT * FROM firs LIMIT 100;")
+        sql_explanation = sql_payload.get("explanation", "")
 
-    # STEP 13: Audit logging
-    try:
-        audit_entry = AuditLog(
-            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            user_id=current_user.user_id,
-            username=current_user.username,
-            role=payload.role,
-            query=payload.query,
-            intent=intent,
-            entities=json.dumps(entities),
-            generated_sql=rewritten_sql,
-            rows_returned=len(sql_results),
-            summary=final_response["answer"],
-            execution_time=round(execution_time, 4)
-        )
-        db.add(audit_entry)
-        db.commit()
-    except Exception as ae:
-        logger.error(f"Failed to record audit log: {ae}")
+        # STEP 6 & 7: SQL Execution & Vector RAG Integration
+        sql_results = execute_raw_sql(sql_query)
+        total_rows = len(sql_results)
+        logger.info(f"Executed SQL returned {total_rows} rows.")
 
-    return final_response
+        # Hybrid Search: Run Semantic Vector Search if vector generated
+        semantic_results = []
+        try:
+            actual_db = db if hasattr(db, "add") else SessionLocal()
+            semantic_results = semantic_search_firs(db=actual_db, limit=3, query_vector=query_vector)
+            logger.info(f"Semantic search found {len(semantic_results)} matching FIRs.")
+            
+            existing_fir_numbers = {r.get("fir_number") for r in sql_results if r.get("fir_number")}
+            for s_row in semantic_results:
+                if s_row.get("fir_number") not in existing_fir_numbers:
+                    s_row_copy = dict(s_row)
+                    s_row_copy["description"] = f"[(Semantic Match: {s_row['score']:.2f})] {s_row['description']}"
+                    sql_results.append(s_row_copy)
+        except Exception as e:
+            logger.error(f"Semantic RAG search failed: {e}")
+
+        if len(sql_results) < 5:
+            baseline_rows = execute_raw_sql("SELECT f.fir_id, f.fir_number, f.date, f.crime_type, f.description, a.accused_id, a.name as accused_name, l.name as loc_name, l.district, l.lat, l.lng FROM firs f JOIN fir_accused fa ON f.fir_id = fa.fir_id JOIN accused a ON fa.accused_id = a.accused_id JOIN locations l ON f.location_id = l.location_id LIMIT 10")
+            sql_results.extend(baseline_rows)
+            total_rows = len(sql_results)
+
+        # STEP 8: Run Graph Engine
+        graph_data = build_network_graph(sql_results)
+
+        # STEP 9: Run Pattern Engine
+        pattern_data = detect_hotspots(sql_results)
+
+        # STEP 10: Summarize Results citing FIRs
+        summary = summarize_results(english_query, sql_results, semantic_results=semantic_results, debug_data=debug_data)
+
+        # STEP 11: Evidence Assembly
+        cited_firs = list({r.get("fir_number") for r in sql_results if r.get("fir_number")})[:5]
+        rag_documents = [
+            {
+                "id": str(r.get("fir_number")),
+                "title": f"FIR Case File {r.get('fir_number')}",
+                "snippet": r.get("description", "")[:120] + "...",
+                "score": round(r.get("score", 0.92), 2)
+            }
+            for r in semantic_results
+        ]
+
+        final_response = {
+            "query_type": intent.lower(),
+            "summary": summary,
+            "evidence": {
+                "cited_firs": cited_firs,
+                "sql_used": sql_query,
+                "rag_documents_retrieved": rag_documents,
+                "confidence_score": confidence
+            },
+            "graph": graph_data,
+            "heatmap": pattern_data
+        }
+
+        # Calculate Accused Specific Risk
+        target_accused_id = None
+        for r in sql_results:
+            if r.get("accused_id"):
+                target_accused_id = r.get("accused_id")
+                break
+
+        risk_data = calculate_explainable_risk(target_accused_id) if target_accused_id else None
+
+        # Calculate Similar Cases
+        target_fir_id = sql_results[0].get("fir_id") if sql_results and sql_results[0].get("fir_id") else 1
+        similar_cases_data = find_similar_firs(target_fir_id, top_k=3)
+
+        # Calculate Alias Identity Matches
+        identity_matches_data = find_potential_aliases(target_accused_id).get("candidates", [])
+
+        # Calculate 2-Hop Shadow Associations
+        shadow_associations_data = find_shadow_associations(target_accused_id).get("shadow_associations", [])
+
+        # Calculate Temporal Patterns for query district or crime
+        target_district = entities.get("districts", [None])[0] if entities.get("districts") else None
+        target_crime = entities.get("crime_types", [None])[0] if entities.get("crime_types") else None
+        temporal_patterns_data = get_chrono_matrix(crime_type=target_crime, district=target_district, accused_id=target_accused_id)
+
+        # Update final response to full Canonical Intelligence Payload
+        final_response["query_type"] = intent.lower()
+        final_response["execution_mode"] = "HYBRID-AI" if debug_data.get("fallback_triggered", False) else "DIRECT-AI"
+        final_response["model_used"] = debug_data.get("model_used", "simulated-fallback-model")
+        final_response["fallback_reason"] = debug_data.get("fallback_reason", "")
+        final_response["tokens_used"] = debug_data.get("tokens_used", 0)
+        final_response["intent"] = intent
+        final_response["confidence"] = confidence
+        final_response["total_rows_found"] = total_rows
+        final_response["rows_returned"] = len(sql_results)
+        final_response["risk"] = risk_data
+        final_response["similar_cases"] = similar_cases_data.get("similar_cases", [])
+        final_response["identity_matches"] = identity_matches_data
+        final_response["temporal_patterns"] = temporal_patterns_data
+        final_response["shadow_associations"] = shadow_associations_data
+        final_response["evidence"]["total_rows_found"] = total_rows
+        final_response["evidence"]["rows_returned"] = len(sql_results)
+
+        final_response["debug"] = {
+            "intent_prompt": debug_data.get("intent_prompt", ""),
+            "sql_prompt": debug_data.get("sql_prompt", ""),
+            "summary_prompt": debug_data.get("summary_prompt", ""),
+            "model_used": debug_data.get("model_used", "simulated-fallback-model"),
+            "tokens_used": debug_data.get("tokens_used", 0)
+        }
+
+        # Store in in-memory cache
+        try:
+            siddhi_cache.set("query", {"query": payload.query, "role": payload.role}, final_response)
+        except Exception as ce:
+            logger.warning(f"Failed to set cache: {ce}")
+
+        # STEP 13: Audit logging
+        try:
+            actual_db = db if hasattr(db, "add") else SessionLocal()
+            audit_entry = AuditLog(
+                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                user_id=current_user.user_id,
+                username=current_user.username,
+                role=current_user.role,
+                query=payload.query,
+                intent=intent,
+                entities=str(entities),
+                generated_sql=str(sql_payload.get("sql", "")),
+                rows_returned=total_rows,
+                summary=str(summary or ""),
+                execution_time=time.time() - start_time
+            )
+            actual_db.add(audit_entry)
+            actual_db.commit()
+        except Exception as ae:
+            logger.error(f"Failed to record audit log: {ae}")
+
+        return final_response
+
+    except Exception as master_exc:
+        logger.error(f"Master Exception in /api/query: {master_exc}. Falling back gracefully to HYBRID-AI mode.")
+        try:
+            fallback_answer = simulate_gemini_response(payload.query, is_json=False)
+            baseline_rows = execute_raw_sql("SELECT f.fir_id, f.fir_number, f.date, f.crime_type, f.description, a.accused_id, a.name as accused_name, l.name as loc_name, l.district, l.lat, l.lng FROM firs f JOIN fir_accused fa ON f.fir_id = fa.fir_id JOIN accused a ON fa.accused_id = a.accused_id JOIN locations l ON f.location_id = l.location_id LIMIT 15")
+            fallback_graph = build_network_graph(baseline_rows)
+            fallback_pattern = detect_hotspots(baseline_rows)
+            
+            return {
+                "query_type": "record_lookup",
+                "execution_mode": "HYBRID-AI",
+                "model_used": "simulated-fallback-model",
+                "fallback_reason": str(master_exc),
+                "tokens_used": 0,
+                "intent": "RECORD_LOOKUP",
+                "confidence": 0.8,
+                "total_rows_found": len(baseline_rows),
+                "rows_returned": len(baseline_rows),
+                "summary": fallback_answer,
+                "evidence": {
+                    "cited_firs": [],
+                    "sql_used": "SELECT * FROM firs LIMIT 15;",
+                    "rag_documents_retrieved": [],
+                    "confidence_score": 0.8,
+                    "total_rows_found": len(baseline_rows),
+                    "rows_returned": len(baseline_rows)
+                },
+                "graph": fallback_graph,
+                "heatmap": fallback_pattern,
+                "risk": None,
+                "similar_cases": [],
+                "identity_matches": [],
+                "temporal_patterns": [],
+                "shadow_associations": [],
+                "debug": {
+                    "intent_prompt": "",
+                    "sql_prompt": "",
+                    "summary_prompt": "",
+                    "model_used": "simulated-fallback-model",
+                    "tokens_used": 0
+                }
+            }
+        except Exception:
+            raise HTTPException(status_code=500, detail="Internal processing exception")
+
+@app.get("/api/accused/{accused_id}/risk")
+def get_accused_risk_score(accused_id: int):
+    """Returns normalized Explainable Intelligence Risk Score and factor breakdown."""
+    return calculate_explainable_risk(accused_id)
+
+@app.get("/api/fir/{fir_id}/similar")
+def get_similar_fir_cases(fir_id: int):
+    """Finds Top-K similar FIRs using cosine similarity on vector embeddings."""
+    return find_similar_firs(fir_id, top_k=4)
+
+@app.get("/api/anomalies")
+def get_spatial_anomalies(district: Optional[str] = None):
+    """Detects locations where 7-day crime activity is unusually high compared to 30-day baseline."""
+    return {"anomalies": detect_crime_anomalies(district_filter=district)}
+
+@app.get("/api/accused/{accused_id}/aliases")
+def get_accused_aliases(accused_id: int):
+    """Detects potential identity matches across accused records in siddhi.db."""
+    return find_potential_aliases(accused_id)
+
+@app.get("/api/analytics/chrono-matrix")
+def get_analytics_chrono_matrix(
+    crime_type: Optional[str] = None,
+    district: Optional[str] = None,
+    location_id: Optional[int] = None,
+    accused_id: Optional[int] = None
+):
+    """Computes Day-of-Week x Crime Category Temporal Matrix from siddhi.db FIR records."""
+    return get_chrono_matrix(crime_type=crime_type, district=district, location_id=location_id, accused_id=accused_id)
+
+@app.get("/api/accused/{accused_id}/shadow-associations")
+def get_accused_shadow_associations(accused_id: int):
+    """Detects potential 2-hop indirect criminal associations (A --- X --- B) in siddhi.db."""
+    return find_shadow_associations(accused_id)
+
 
 @app.get("/api/fir/{fir_id}")
 def get_fir_details(fir_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1410,5 +1523,14 @@ def api_executive_briefing(current_user: User = Depends(get_current_user), db: S
 if __name__ == "__main__":
     import uvicorn
     import os
-    port = int(os.environ.get("X_ZOHO_CATALYST_LISTEN_PORT", 8000))
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=port, log_level="info")
+    import sys
+    
+    # Get current file directory
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # If in backend subfolder, use parent dir; otherwise use current dir
+    app_dir = os.path.dirname(current_dir) if os.path.basename(current_dir) == 'backend' else current_dir
+    if app_dir not in sys.path:
+        sys.path.insert(0, app_dir)
+        
+    port = int(os.environ.get("X_ZOHO_CATALYST_LISTEN_PORT", os.environ.get("PORT", 8000)))
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

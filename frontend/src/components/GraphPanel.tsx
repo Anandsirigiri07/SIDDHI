@@ -38,9 +38,17 @@ interface GraphPanelProps {
   graphData: GraphData | null;
   onAccusedClick: (accusedId: number) => void;
   onFIRClick: (firId: number) => void;
+  showShadowLinks?: boolean;
+  onToggleShadowLinks?: () => void;
 }
 
-export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClick, onFIRClick }) => {
+export const GraphPanel: React.FC<GraphPanelProps> = ({
+  graphData,
+  onAccusedClick,
+  onFIRClick,
+  showShadowLinks = false,
+  onToggleShadowLinks
+}) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -78,40 +86,50 @@ export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClic
 
     const filteredNodeIds = new Set(filteredNodes.map(n => n.id));
 
-    const filteredLinks = graphData.links.filter((link) => {
-      const sourceId = typeof link.source === 'object' ? (link.source as any).id : link.source;
-      const targetId = typeof link.target === 'object' ? (link.target as any).id : link.target;
-      return filteredNodeIds.has(sourceId) && filteredNodeIds.has(targetId);
-    });
-
-    // Deep copy data for D3 mutation
-    const nodes = filteredNodes.map((d) => ({ ...d }));
-    const links = filteredLinks.map((d) => ({
-      source: d.source,
-      target: d.target,
-      relation: d.relation,
-    }));
+    // Map links and retain properties including is_shadow
+    const links = (graphData.links || [])
+      .filter((l: any) => {
+        const sId = typeof l.source === 'object' ? l.source.id : l.source;
+        const tId = typeof l.target === 'object' ? l.target.id : l.target;
+        return filteredNodeIds.has(sId) && filteredNodeIds.has(tId);
+      })
+      .filter((l: any) => showShadowLinks || !l.is_shadow)
+      .map((d: any) => ({
+        source: typeof d.source === 'object' ? d.source.id : d.source,
+        target: typeof d.target === 'object' ? d.target.id : d.target,
+        relation: d.relation,
+        is_shadow: d.is_shadow || false,
+        association_score: d.association_score,
+        shared_intermediary_names: d.shared_intermediary_names
+      }));
 
     // Setup simulation
-    const simulation = d3.forceSimulation(nodes as any)
+    const simulation = d3.forceSimulation(filteredNodes as any)
       .force('link', d3.forceLink(links as any).id((d: any) => d.id).distance(90))
       .force('charge', d3.forceManyBody().strength(-150))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collision', d3.forceCollide().radius((d: any) => (d.size || 10) + 4));
 
-    // Render links
+    // Render links (Dashed cyan stroke for shadow edges per Rule #7 & #8)
     const link = gContainer.append('g')
       .selectAll('line')
       .data(links)
       .join('line')
-      .attr('stroke', '#1e293b') // slate-800
-      .attr('stroke-opacity', 0.6)
-      .attr('stroke-width', 1.5);
+      .attr('stroke', (d: any) => d.is_shadow ? '#00e5ff' : '#1e293b')
+      .attr('stroke-dasharray', (d: any) => d.is_shadow ? '4 4' : 'none')
+      .attr('stroke-opacity', (d: any) => d.is_shadow ? 0.9 : 0.6)
+      .attr('stroke-width', (d: any) => d.is_shadow ? 2.0 : 1.5);
+
+    link.append('title')
+      .text((d: any) => d.is_shadow 
+        ? `Potential Indirect Association\nAssociation Score: ${d.association_score}/100\nIntermediaries: ${d.shared_intermediary_names?.join(', ')}` 
+        : `Direct Link (${d.relation})`
+      );
 
     // Render nodes
     const node = gContainer.append('g')
       .selectAll('g')
-      .data(nodes)
+      .data(filteredNodes)
       .join('g')
       .attr('class', 'node-group cursor-pointer')
       .call(d3.drag()
@@ -170,14 +188,14 @@ export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClic
         return label;
       });
 
-    // Click handler mapping to numeric database IDs
     node.on('click', (_event, d: any) => {
-      const parts = d.id.split('-');
+      if (!d || !d.id) return;
+      const parts = d.id.toString().split('-');
       const type = parts[0];
-      const numericId = parseInt(parts[1], 10);
-      if (type === 'accused') {
+      const numericId = parseInt(parts[1] || '0', 10);
+      if (type === 'accused' && onAccusedClick) {
         onAccusedClick(numericId);
-      } else if (type === 'fir') {
+      } else if (type === 'fir' && onFIRClick) {
         onFIRClick(numericId);
       }
     });
@@ -263,6 +281,21 @@ export const GraphPanel: React.FC<GraphPanelProps> = ({ graphData, onAccusedClic
                 className="accent-blue-500 rounded border-slate-800 bg-slate-900 focus:ring-0"
               />
               <span className="text-slate-400 font-semibold">Victims</span>
+            </label>
+
+            {/* Feature 3: Opt-in Shadow Syndicate Associations Toggle per Mandatory Rule #4 & #7 */}
+            <label className="flex items-center gap-1.5 cursor-pointer select-none px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/60 hover:bg-cyan-900/40 transition-colors">
+              <input
+                type="checkbox"
+                checked={showShadowLinks}
+                onChange={() => {
+                  if (onToggleShadowLinks) onToggleShadowLinks();
+                }}
+                className="accent-cyan-400 rounded border-slate-800 bg-slate-900 focus:ring-0"
+              />
+              <span className="text-cyan-300 font-bold text-[10px] uppercase tracking-wider">
+                Find Potential Indirect Associations
+              </span>
             </label>
           </div>
           <div className="flex items-center gap-2">

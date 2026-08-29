@@ -9,6 +9,7 @@ export interface UserSession {
 export const setSession = (token: string, user: UserSession) => {
   localStorage.setItem('siddhi_token', token);
   localStorage.setItem('siddhi_user', json.stringify(user));
+  window.dispatchEvent(new Event('auth_state_change'));
 };
 
 export const getSessionToken = (): string | null => {
@@ -30,6 +31,7 @@ export const getSessionUser = (): UserSession | null => {
 export const clearSession = () => {
   localStorage.removeItem('siddhi_token');
   localStorage.removeItem('siddhi_user');
+  window.dispatchEvent(new Event('auth_state_change'));
 };
 
 export const isAuthenticated = (): boolean => {

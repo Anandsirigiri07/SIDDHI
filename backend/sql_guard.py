@@ -1,7 +1,14 @@
 # backend/sql_guard.py
 import re
 
-ALLOWED_TABLES = {"users", "locations", "officers", "firs", "accused", "fir_accused", "victims", "audit_logs"}
+ALLOWED_TABLES = {
+    "users", "locations", "officers", "firs", "accused", "fir_accused", "victims", "audit_logs",
+    "state", "district", "unittype", "unit", "rank", "designation", "employee", "casecategory", 
+    "gravityoffence", "crimehead", "crimesubhead", "court", "casestatusmaster", "occupationmaster", 
+    "religionmaster", "castemaster", "complainantdetails", "chargesheetdetails", "arrestsurrender", 
+    "act", "section", "actsectionassociation", "crimeheadactsection", "fir_embeddings", 
+    "centrality_metrics", "community_analysis", "hotspot_clusters", "feature_store", "gemini_cache"
+}
 FORBIDDEN_KEYWORDS = {"update", "delete", "drop", "insert", "alter", "truncate", "attach", "pragma"}
 
 def clean_query(sql: str) -> str:
@@ -54,8 +61,21 @@ def validate_query(sql: str) -> bool:
 def rewrite_query(sql: str) -> str:
     """
     Cleans and rewrites the query, appending LIMIT 100 if no limit is present.
+    Remaps common LLM column & join misnomers to match siddhi.db SQLite schema.
     """
     sql_clean = clean_query(sql)
+    
+    # Map LLM join misnomers BEFORE column replacements
+    sql_clean = re.sub(r'\b(left\s+join|join)\s+firs\s+f\s+on\s+(a\.id|a\.accused_id)\s*=\s*(f\.id|f\.accused_id)\b', 'LEFT JOIN fir_accused fa ON a.accused_id = fa.accused_id LEFT JOIN firs f ON fa.fir_id = f.fir_id', sql_clean, flags=re.IGNORECASE)
+    sql_clean = re.sub(r'\b(left\s+join|join)\s+firs\s+f\s+on\s+(f\.id|f\.accused_id)\s*=\s*(a\.id|a\.accused_id)\b', 'LEFT JOIN fir_accused fa ON a.accused_id = fa.accused_id LEFT JOIN firs f ON fa.fir_id = f.fir_id', sql_clean, flags=re.IGNORECASE)
+
+    # Map LLM column misnomers to exact SQLite schema column names
+    sql_clean = re.sub(r'\ba\.id\b', 'a.accused_id', sql_clean, flags=re.IGNORECASE)
+    sql_clean = re.sub(r'\bf\.id\b', 'f.fir_id', sql_clean, flags=re.IGNORECASE)
+    sql_clean = re.sub(r'\bl\.id\b', 'l.location_id', sql_clean, flags=re.IGNORECASE)
+    sql_clean = re.sub(r'\bl\.lon\b', 'l.lng', sql_clean, flags=re.IGNORECASE)
+    sql_clean = re.sub(r'\bf\.lon\b', 'f.longitude', sql_clean, flags=re.IGNORECASE)
+    sql_clean = re.sub(r'\bf\.lat\b', 'f.latitude', sql_clean, flags=re.IGNORECASE)
     
     # Strip trailing semicolon for appending LIMIT
     if sql_clean.endswith(';'):

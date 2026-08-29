@@ -24,7 +24,7 @@ export const AlertPanel: React.FC<AlertPanelProps> = ({ alerts }) => {
   return (
     <div className="w-full flex flex-col gap-2 mb-4">
       {alerts.map((alert, index) => {
-        const severity = alert.severity.toLowerCase();
+        const severity = (alert.severity || 'medium').toString().toLowerCase();
         let bgStyle = 'bg-rose-950/40 border-rose-800/60 text-rose-300';
         let icon = <ShieldAlert className="w-5 h-5 text-rose-500 flex-shrink-0" />;
         

@@ -87,7 +87,6 @@ for env_dir in [os.path.dirname(__file__), os.path.join(os.path.dirname(__file__
             logger.error(f"Error loading .env from {env_path}: {e}")
 
 # Config
-# Parse and hold multiple keys for API Key Rotation / Quota resilience
 GEMINI_API_KEYS = []
 primary_key = os.getenv("GEMINI_API_KEY", "")
 if primary_key:
@@ -100,6 +99,14 @@ if backup_key:
 for k, v in os.environ.items():
     if k.startswith("GEMINI_API_KEY_") and k != "GEMINI_API_KEY_BACKUP" and v and v not in GEMINI_API_KEYS:
         GEMINI_API_KEYS.append(v)
+
+if not GEMINI_API_KEYS:
+    GEMINI_API_KEYS = [
+        os.getenv("GEMINI_API_KEY", ""),
+        os.getenv("GEMINI_API_KEY_2", "")
+    ]
+
+GEMINI_API_KEY = GEMINI_API_KEYS[0]
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
@@ -193,7 +200,7 @@ def generate_text_gemini(
     response_text = ""
     is_fallback = False
     
-    if not GEMINI_API_KEY:
+    if not GEMINI_API_KEYS:
         if debug_data is not None:
             debug_data["fallback_triggered"] = True
             debug_data["fallback_reason"] = "GEMINI_API_KEY env var not set"
@@ -204,65 +211,78 @@ def generate_text_gemini(
             debug_data["model_used"] = "simulated-fallback-model"
         is_fallback = True
     else:
-        max_retries = 3
-        delay = 12.0
-        last_error = None
+        # Ensure configured MODEL_NAME is tried first, then fallback models
+        fallback_models = [MODEL_NAME] if MODEL_NAME else []
+        for m in ["gemini-2.5-flash", "gemini-1.5-flash"]:
+            if m not in fallback_models:
+                fallback_models.append(m)
         
-        for attempt in range(max_retries + 1):
-            try:
-                active_key = configure_active_key()
-                if active_key:
-                    logger.info(f"Invoking Gemini with active key index: {current_key_index % len(GEMINI_API_KEYS)}")
-                model = genai.GenerativeModel(
-                    model_name=MODEL_NAME,
-                    system_instruction=system_instruction if system_instruction else None
-                )
-                generation_config = {}
-                if response_schema:
-                    generation_config["response_mime_type"] = "application/json"
-                    generation_config["response_schema"] = response_schema
-                elif is_json:
-                    generation_config["response_mime_type"] = "application/json"
-                    
-                response = model.generate_content(
-                    prompt,
-                    generation_config=genai.types.GenerationConfig(**generation_config)
-                )
-                
-                # Calculate tokens
-                tokens = 0
+        success = False
+        for target_model in fallback_models:
+            # Try all available keys for this model before falling back to next model
+            for key_attempt in range(len(GEMINI_API_KEYS)):
                 try:
-                    tokens = response.usage_metadata.total_token_count
-                except Exception:
-                    tokens = len(prompt.split()) + len(response.text.split()) + len(system_instruction.split())
+                    if key_attempt > 0:
+                        time.sleep(0.5)
+                    active_key = configure_active_key()
+                    if active_key:
+                        logger.info(f"Invoking Gemini model '{target_model}' with active key index: {current_key_index % len(GEMINI_API_KEYS)}")
                     
-                if debug_data is not None:
-                    debug_data["tokens_used"] = debug_data.get("tokens_used", 0) + tokens
-                    debug_data["model_used"] = MODEL_NAME
+                    model = genai.GenerativeModel(
+                        model_name=target_model,
+                        system_instruction=system_instruction if system_instruction else None
+                    )
+                    generation_config = {}
+                    if response_schema:
+                        generation_config["response_mime_type"] = "application/json"
+                        generation_config["response_schema"] = response_schema
+                    elif is_json:
+                        generation_config["response_mime_type"] = "application/json"
+                        
+                    response = model.generate_content(
+                        prompt,
+                        generation_config=genai.types.GenerationConfig(**generation_config)
+                    )
                     
-                response_text = response.text
-                break
-                
-            except Exception as e:
-                last_error = e
-                # Check if this is a rate limit / 429 error
-                is_rate_limit = False
-                err_str = str(e)
-                if "ResourceExhausted" in type(e).__name__ or "429" in err_str or "quota" in err_str.lower():
-                    is_rate_limit = True
-                    
-                if is_rate_limit and len(GEMINI_API_KEYS) > 1 and attempt < max_retries:
-                    logger.warning(f"Gemini API key index {current_key_index % len(GEMINI_API_KEYS)} exhausted. Rotating to next key...")
-                    current_key_index += 1
-                    # Immediate retry with rotated key, do not sleep
-                    continue
-                elif is_rate_limit and attempt < max_retries:
-                    logger.warning(f"Gemini API rate limited (429). Retrying in {delay}s... Attempt {attempt + 1}/{max_retries}")
-                    time.sleep(delay)
-                    delay *= 1.5
-                else:
-                    # Do not retry on other exceptions or if we exhausted retries
+                    # Calculate tokens
+                    tokens = 0
+                    try:
+                        tokens = response.usage_metadata.total_token_count
+                    except Exception:
+                        tokens = len(prompt.split()) + len(response.text.split()) + len(system_instruction.split())
+                        
+                    if debug_data is not None:
+                        debug_data["tokens_used"] = debug_data.get("tokens_used", 0) + tokens
+                        debug_data["model_used"] = target_model
+                        
+                    response_text = response.text
+                    success = True
                     break
+                    
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e)
+                    is_temporary_rpm = "Please retry in" in err_str or "rate-limits" in err_str.lower()
+                    
+                    if is_temporary_rpm:
+                        # Extract sleep time or default to 2.5 seconds
+                        sleep_time = 2.5
+                        import re
+                        match = re.search(r"retry in ([\d\.]+)s", err_str)
+                        if match:
+                            sleep_time = float(match.group(1)) + 0.5
+                        
+                        # Only sleep if it is a short delay (<= 4.0 seconds) to prevent gateway timeout
+                        if sleep_time <= 4.0:
+                            logger.warning(f"Temporary RPM rate limit hit. Sleeping for {sleep_time:.2f}s and retrying with the same key...")
+                            time.sleep(sleep_time)
+                            continue
+                    
+                    logger.warning(f"Gemini API error on model '{target_model}' using key index {current_key_index % len(GEMINI_API_KEYS)}: {e}. Rotating key...")
+                    current_key_index += 1
+            
+            if success:
+                break
         
         # If we exited the loop and response_text is still empty, fall back to simulation
         if not response_text:
@@ -278,8 +298,8 @@ def generate_text_gemini(
                 debug_data["model_used"] = "simulated-fallback-model"
             is_fallback = True
 
-    # 2. Write to Cache (both successful API and fallbacks so we don't spam the API)
-    if response_text:
+    # 2. Write to Cache (only successful API responses, NOT temporary rate-limit fallbacks)
+    if response_text and not is_fallback:
         try:
             from backend.database import engine
             with engine.begin() as conn:
@@ -708,7 +728,23 @@ def simulate_gemini_response(prompt: str, is_json: bool, system_instruction: str
     prompt_lower = user_query.lower()
     sys_lower = system_instruction.lower()
     
-    if "prosecutor" in sys_lower or "dossier" in sys_lower:
+    if is_json:
+        if "sql" in prompt_lower or "sqlqueryresponse" in sys_lower or "sql" in sys_lower:
+            return json.dumps({
+                "sql": "SELECT f.fir_id, f.fir_number, f.date, f.crime_type, f.description, a.accused_id, a.name as accused_name, l.name as loc_name, l.district, l.lat, l.lng FROM firs f JOIN fir_accused fa ON f.fir_id = fa.fir_id JOIN accused a ON fa.accused_id = a.accused_id JOIN locations l ON f.location_id = l.location_id LIMIT 50;",
+                "explanation": "Simulated structured database search."
+            })
+        if "intent" in sys_lower or "classify" in sys_lower:
+            return json.dumps({
+                "intent": "NETWORK_ANALYSIS",
+                "confidence": 0.9,
+                "entities": {"locations": [], "crime_types": [], "accused": [], "time_ranges": []},
+                "requires_graph": True,
+                "requires_map": True,
+                "time_range": "ALL_TIME"
+            })
+
+    if ("prosecutor" in sys_lower or "dossier" in sys_lower) and not is_json:
         sql_results = []
         try:
             db_records_match = re.search(r"Database records:\s*(\[.*\])", prompt, re.DOTALL)
