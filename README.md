@@ -1,6 +1,6 @@
 # SIDDHI 2.0 — Situational Intelligence Dashboard for Dynamic Hotspot Investigation
 
-**"From Reactive Policing to Predictive Intelligence."** — _SIDDHI (Sanskrit: सिद्धि — realization / success / supreme attainment)_
+**"From Reactive Policing to Predictive Intelligence."** — _SIDDHI _
 
 > SIDDHI 2.0 is a production-grade, fault-tolerant crime analytics & investigative intelligence platform built for the **Karnataka State Police Datathon 2026**. Powered by Gemini 2.5 Flash, 3-Key API Rotation, and 7 core data-science engines, it converts English and Kannada natural language queries into instant conversational intelligence, NetworkX/D3 criminal association graphs, and Leaflet/DBSCAN spatial hotspot maps in a single pane of glass — running at zero infrastructure cost on Zoho Catalyst.
 
